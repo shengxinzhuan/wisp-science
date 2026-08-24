@@ -55,7 +55,7 @@ impl Tool for SetRuntimeInterpreterTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "set_runtime_interpreter",
-            "Save the Python or R executable for an existing execution context. This writes Wisp's persisted context settings; it does not set host environment variables or install software. An interpreter inside a conda, mamba, or pixi environment prefix is launched with that prefix on the worker's own PATH, so it can load its own libraries. If this project's matching REPL already exists, it is restarted and its in-memory variables are cleared.",
+            "Save the Python or R executable for an existing execution context. This writes Wisp's persisted context settings; it does not set host environment variables or install software. If this project's matching REPL already exists, it is restarted and its in-memory variables are cleared.",
             serde_json::json!({
                 "type": "object",
                 "properties": {

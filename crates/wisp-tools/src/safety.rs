@@ -131,19 +131,6 @@ pub fn validate_file_path(root: &Path, path: &str) -> Result<PathBuf, String> {
     let real = match dunce::canonicalize(&abs) {
         Ok(r) => r,
         Err(_) => {
-            // Canonicalize failed: either the target doesn't exist yet (a new
-            // write) or it is a symlink whose target doesn't resolve. A
-            // dangling link must be rejected here — the parent+file fallback
-            // below can't see where the link points, and a follow-on write
-            // would create the link's target, possibly outside the root.
-            if abs
-                .symlink_metadata()
-                .is_ok_and(|m| m.file_type().is_symlink())
-            {
-                return Err(format!(
-                    "path '{path}' is a symlink whose target cannot be resolved"
-                ));
-            }
             // Target doesn't exist yet (write). Canonicalize the parent and
             // append the file name, then verify the parent is under root.
             let parent = abs.parent().unwrap_or(Path::new(""));
@@ -161,64 +148,6 @@ pub fn validate_file_path(root: &Path, path: &str) -> Result<PathBuf, String> {
         return Err(format!("path '{}' is a directory, not a file", path));
     }
     Ok(real)
-}
-
-/// Overwrite `path` without following a symlink (Unix) or reparse point
-/// (Windows) in the final component. `validate_file_path` already resolves
-/// links at check time; this closes the check-to-write window in which the
-/// validated path could be swapped for a link pointing outside the root.
-pub fn write_no_follow(path: &Path, content: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut file = open_no_follow(path)?;
-    file.set_len(0)?;
-    file.write_all(content)
-}
-
-#[cfg(unix)]
-fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-        .map_err(|e| {
-            // O_NOFOLLOW reports a symlink final component as ELOOP (Linux,
-            // macOS) or EMLINK (some BSDs); surface a clearer message.
-            if path
-                .symlink_metadata()
-                .is_ok_and(|m| m.file_type().is_symlink())
-            {
-                std::io::Error::other(format!(
-                    "refusing to write through symlink '{}'",
-                    path.display()
-                ))
-            } else {
-                e
-            }
-        })
-}
-
-#[cfg(windows)]
-fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
-    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-    // Not in windows-sys' enabled feature set; values are ABI-stable.
-    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)?;
-    // The flag opened the reparse point itself rather than its target, so
-    // checking the handle (not the path) is race-free.
-    if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err(std::io::Error::other(format!(
-            "refusing to write through reparse point '{}'",
-            path.display()
-        )));
-    }
-    Ok(file)
 }
 
 /// Resolve `path` under `root`, allowing directories (for `list_dir`).
@@ -418,61 +347,6 @@ mod tests {
         assert!(
             resolve_under_root(&root, "does_not_exist.txt").is_err(),
             "nonexistent paths are rejected (list/read need an existing target)"
-        );
-
-        std::fs::remove_dir_all(&root).ok();
-        std::fs::remove_dir_all(&outside).ok();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn dangling_symlink_is_rejected_instead_of_using_the_parent_fallback() {
-        let root = unique_dir("dangling");
-        let outside = unique_dir("dangling_outside");
-        // Link target does not exist, so canonicalize fails and the old
-        // parent+file fallback would have let the path through.
-        std::os::unix::fs::symlink(outside.join("not_yet.txt"), root.join("dangling.txt")).unwrap();
-        std::os::unix::fs::symlink(root.join("also_missing.txt"), root.join("dangling_in.txt"))
-            .unwrap();
-
-        for name in ["dangling.txt", "dangling_in.txt"] {
-            let got = validate_file_path(&root, name);
-            assert!(
-                got.as_ref().is_err_and(|e| e.contains("symlink")),
-                "{name}: dangling links must be rejected: {got:?}"
-            );
-        }
-
-        std::fs::remove_dir_all(&root).ok();
-        std::fs::remove_dir_all(&outside).ok();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn write_no_follow_refuses_symlinks_but_overwrites_regular_files() {
-        let root = unique_dir("nofollow");
-        let outside = unique_dir("nofollow_outside");
-        std::fs::write(root.join("plain.txt"), "long original contents").unwrap();
-        std::os::unix::fs::symlink(outside.join("target.txt"), root.join("link.txt")).unwrap();
-
-        // Simulates the path being swapped for a link after validation.
-        let err = write_no_follow(&root.join("link.txt"), b"payload").unwrap_err();
-        assert!(err.to_string().contains("symlink"), "{err}");
-        assert!(
-            !outside.join("target.txt").exists(),
-            "no-follow write must not create the link target"
-        );
-
-        write_no_follow(&root.join("plain.txt"), b"short").unwrap();
-        assert_eq!(
-            std::fs::read_to_string(root.join("plain.txt")).unwrap(),
-            "short",
-            "overwrite must truncate previous longer contents"
-        );
-        write_no_follow(&root.join("created.txt"), b"new file").unwrap();
-        assert_eq!(
-            std::fs::read_to_string(root.join("created.txt")).unwrap(),
-            "new file"
         );
 
         std::fs::remove_dir_all(&root).ok();

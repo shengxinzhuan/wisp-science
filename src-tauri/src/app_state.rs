@@ -160,27 +160,6 @@ pub(crate) fn mcp_app_frame_id(instance_id: &str) -> Result<&str, String> {
     Ok(frame_id)
 }
 
-/// Stable tab/bridge identity for one MCP App. Same UI resource (ignoring
-/// query/hash) or tool name reuses the existing center tab; a unique
-/// presentation UUID must not mint a new window.
-pub(crate) fn mcp_app_identity(payload: &serde_json::Value) -> &str {
-    let raw = payload
-        .pointer("/resource/uri")
-        .or_else(|| payload.pointer("/tool/name"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("app");
-    raw.split_once(['?', '#'])
-        .map(|(base, _)| base)
-        .filter(|base| !base.is_empty())
-        .unwrap_or(raw)
-}
-
-pub(crate) fn mcp_app_instance_id(frame_id: &str, payload: &serde_json::Value) -> String {
-    format!("mcp-app:{frame_id}:{}", mcp_app_identity(payload))
-}
-
 pub(crate) fn normalize_mcp_app_context(
     app_name: &str,
     context: serde_json::Value,

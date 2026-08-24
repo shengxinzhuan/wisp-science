@@ -10,7 +10,8 @@ use super::{
     persist_ui_events, provenance_ui_file_changes, receive_confirm_decision,
     reclaim_unconsumed_cutin, resolve_acp_artifact_references, resolve_composer_references,
     resolve_reader_references, resolve_review_backend, resolve_workspace, session_runtime_status,
-    should_hide_app_on_macos_close, should_persist_ui_event, user_message_start, AgentEvent,
+    should_hide_app_on_macos_close, should_persist_ui_event, ui_watchdog_requires_reload,
+    user_message_start, AgentEvent,
     ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport, ProjectActivityLocks,
     QueuedItem, SessionRuntime, SkillInfo, StartupReport, StartupTimeline,
     MAX_PENDING_UI_EVENT_BYTES, UI_STREAM_OUTPUT_MAX_BYTES, UI_TOOL_RESULT_MAX_CHARS,
@@ -304,54 +305,6 @@ fn mcp_app_instance_id_carries_its_session() {
         "session-a"
     );
     assert!(super::mcp_app_frame_id("not-an-app").is_err());
-}
-
-#[test]
-fn mcp_app_instance_id_reuses_resource_uri_across_presentations() {
-    let open = serde_json::json!({
-        "tool": { "name": "figure_open", "title": "Open Scientific Figure Library" },
-        "resource": { "uri": "ui://figure/library.html" },
-    });
-    let search = serde_json::json!({
-        "tool": { "name": "figure_search", "title": "Search scientific figure templates" },
-        "resource": { "uri": "ui://figure/library.html?q=survival#hits" },
-    });
-    assert_eq!(
-        super::mcp_app_instance_id("session-a", &open),
-        "mcp-app:session-a:ui://figure/library.html"
-    );
-    assert_eq!(
-        super::mcp_app_instance_id("session-a", &search),
-        super::mcp_app_instance_id("session-a", &open)
-    );
-    assert_eq!(
-        super::mcp_app_identity(&serde_json::json!({ "tool": { "name": "open_app" } })),
-        "open_app"
-    );
-}
-
-#[test]
-fn replacing_an_mcp_app_bridge_keeps_one_instance() {
-    let bridges = super::McpAppBridges::default();
-    let instance_id = super::mcp_app_instance_id(
-        "session-a",
-        &serde_json::json!({
-            "resource": { "uri": "ui://figure/library.html" },
-            "tool": { "name": "figure_open" },
-        }),
-    );
-    bridges.register(
-        instance_id.clone(),
-        fake_app_bridge("session-a", "figure-library", "figure_open"),
-    );
-    bridges.register(
-        instance_id.clone(),
-        fake_app_bridge("session-a", "figure-library", "figure_search"),
-    );
-    let bridge = bridges.get(&instance_id).unwrap();
-    assert_eq!(bridge.server.connector_id(), "figure-library");
-    assert!(bridge.server.visible_to_app("figure_search"));
-    assert!(!bridge.server.visible_to_app("figure_open"));
 }
 
 #[test]
@@ -2365,4 +2318,19 @@ fn desktop_app_icon_is_full_bleed_with_an_inset_mark() {
         }),
         "do not pass the in-app logo (canvas-filling badge) to cargo tauri icon"
     );
+}
+
+#[test]
+fn ui_watchdog_reload_decision() {
+    // Never fired a beat (fresh boot, or beat cleared after a reload): the
+    // watchdog must wait for fresh beats, not reload on startup silence.
+    assert!(!ui_watchdog_requires_reload(None, None));
+    // Healthy stream.
+    assert!(!ui_watchdog_requires_reload(Some(5), None));
+    // Freshly reloaded, still loading: inside the cooldown.
+    assert!(!ui_watchdog_requires_reload(Some(120), Some(30)));
+    // Dead renderer, first recovery.
+    assert!(ui_watchdog_requires_reload(Some(120), None));
+    // Dead again after the cooldown expired.
+    assert!(ui_watchdog_requires_reload(Some(120), Some(180)));
 }

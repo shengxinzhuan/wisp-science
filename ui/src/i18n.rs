@@ -1272,18 +1272,13 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "browser.auto_launch") => Some("Open browser automatically"),
         (Locale::En, "browser.auto_launch_hint") => Some("When a browser tool needs Chrome/Chromium and it isn't running, start it so the Wisp extension can reconnect. Uses your existing profile, not a temporary automation browser."),
         (Locale::En, "browser.auto_launch_saved") => Some("Browser launch setting saved."),
-        (Locale::En, "browser.auto_close_tabs") => Some("Automatically close browser tabs"),
-        (Locale::En, "browser.auto_close_tabs_hint") => Some("When a conversation turn ends, close tabs Wisp opened during that turn. Tabs you already had open are left alone."),
-        (Locale::En, "browser.auto_close_tabs_saved") => Some("Browser tab cleanup setting saved."),
-        (Locale::En, "browser.cleanup.title") => Some("Close tabs Wisp opened?"),
-        (Locale::En, "browser.cleanup.body") => Some("This turn opened {n} tabs. Selected tabs will be closed. Uncheck any you want to keep."),
-        (Locale::En, "browser.cleanup.close") => Some("Close selected"),
-        (Locale::En, "browser.cleanup.keep") => Some("Keep all"),
-        (Locale::En, "browser.cleanup.error") => Some("Could not close the selected tabs. The extension may be disconnected."),
         (Locale::En, "browser.offline.eyebrow") => Some("No live retrieval"),
         (Locale::En, "browser.offline.title") => Some("This answer has no live web results"),
         (Locale::En, "browser.offline.body") => Some("The browser extension is not connected. This reply is based only on the model's existing knowledge."),
         (Locale::En, "browser.offline.retry") => Some("Retry after connecting"),
+        (Locale::En, "browser.offline.setup") => Some("Set up browser"),
+        (Locale::En, "browser.offline.setup_done") => Some("Extension path copied. In the browser tab that just opened: enable Developer mode, then choose \"Load unpacked\" and paste the path."),
+        (Locale::En, "browser.offline.setup_failed") => Some("Couldn't open the browser automatically. Open chrome://extensions yourself, enable Developer mode, and load the bundled extension from the Wisp install folder."),
         (Locale::En, "browser.offline.dismiss") => Some("Dismiss"),
         (Locale::En, "settings.nav.connections") => Some("Connections"),
         (Locale::En, "settings.nav.channels") => Some("Remote Access"),
@@ -1642,15 +1637,6 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "plugins.enable_and_use") => Some("Enable & use"),
         (Locale::En, "plugins.start_prompt") => Some("Use the enabled {name} plugin now. Discover and call its startup or open-workbench MCP tool immediately. Do not merely describe its capabilities. If startup fails, report the exact error."),
         (Locale::En, "plugins.start_prompt_guided") => Some("Use the enabled {name} plugin now. Its skill guidance is attached to this message; follow it and immediately call the plugin tool that starts or opens its interactive workbench. Do not search for the plugin by display name or merely describe its capabilities. If startup fails, report the exact error."),
-        (Locale::En, "motif.import_local") => Some("Load DNA file"),
-        (Locale::En, "motif.importing") => Some("Loading…"),
-        (Locale::En, "motif.import_hint") => Some("SnapGene DNA, FASTA, GenBank, raw sequence, or Motif JSON · reads the selected file in place"),
-        (Locale::En, "motif.imported") => Some("Loaded"),
-        (Locale::En, "motif.selection_to_chat") => Some("Add selection to chat"),
-        (Locale::En, "motif.selection_reference") => Some("Motif sequence selection"),
-        (Locale::En, "motif.added_file") => Some("Added {name} to Motif"),
-        (Locale::En, "motif.open_first") => Some("Motif is not open; the file and an instruction were added to the message."),
-        (Locale::En, "motif.open_and_add_prompt") => Some("Open Motif and add the attached DNA file {name} to its workspace."),
         (Locale::En, "settings.language") => Some("Language"),
         (Locale::En, "settings.language.en") => Some("English"),
         (Locale::En, "settings.language.zh") => Some("中文"),
@@ -1964,9 +1950,6 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "trajectory.stats.cache_hit") => Some("cache hit {pct}%"),
         (Locale::En, "trajectory.stats.input") => Some("in {tokens} tok"),
         (Locale::En, "trajectory.stats.output") => Some("out {tokens} tok"),
-        (Locale::En, "trajectory.export") => Some("Export HTML"),
-        (Locale::En, "trajectory.export_saved") => Some("Trajectory saved to {path}"),
-        (Locale::En, "trajectory.export_failed") => Some("Could not export trajectory"),
         (Locale::En, "chat.resume") => Some("Resume"),
         (Locale::En, "chat.context_auto_compacted") => Some("Context automatically compacted"),
         (Locale::En, "chat.auto_continued") => Some("Output limit reached; automatically continued ({count}/{limit})"),
@@ -2108,7 +2091,6 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "ctx.copy_message") => Some("Copy message"),
         (Locale::En, "ctx.copy_image") => Some("Copy image"),
         (Locale::En, "ctx.attach_file") => Some("Attach to chat"),
-        (Locale::En, "ctx.add_to_motif") => Some("Add to Motif"),
         (Locale::En, "ctx.attach_directory") => Some("Add folder to chat"),
         (Locale::En, "ctx.register_artifact") => Some("Register as artifact"),
         (Locale::En, "ctx.reveal_in_manager") => Some("Show in file manager"),
@@ -3707,18 +3689,13 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "browser.auto_launch") => Some("自动打开浏览器"),
         (Locale::Zh, "browser.auto_launch_hint") => Some("使用浏览器工具时，如果 Chrome/Chromium 没有在运行，就启动它，让已安装的 Wisp 扩展重新连上。使用你现有的用户资料，不会另开一套自动化浏览器。"),
         (Locale::Zh, "browser.auto_launch_saved") => Some("浏览器启动设置已保存。"),
-        (Locale::Zh, "browser.auto_close_tabs") => Some("自动关闭浏览器标签页"),
-        (Locale::Zh, "browser.auto_close_tabs_hint") => Some("一轮对话结束后，关闭本轮 Wisp 打开的标签页。你原来就已经打开的标签页不会动。"),
-        (Locale::Zh, "browser.auto_close_tabs_saved") => Some("浏览器标签页清理设置已保存。"),
-        (Locale::Zh, "browser.cleanup.title") => Some("关闭本轮打开的标签页？"),
-        (Locale::Zh, "browser.cleanup.body") => Some("本轮 Wisp 打开了 {n} 个标签页，默认将全部关闭。你可以取消选择需要保留的页面。"),
-        (Locale::Zh, "browser.cleanup.close") => Some("关闭所选"),
-        (Locale::Zh, "browser.cleanup.keep") => Some("全部保留"),
-        (Locale::Zh, "browser.cleanup.error") => Some("无法关闭所选标签页。浏览器扩展可能已断开。"),
         (Locale::Zh, "browser.offline.eyebrow") => Some("未联网检索"),
         (Locale::Zh, "browser.offline.title") => Some("本次回答未包含任何联网检索结果"),
         (Locale::Zh, "browser.offline.body") => Some("浏览器扩展未连接。该回答仅基于模型已有知识，不是实时检索结果。"),
         (Locale::Zh, "browser.offline.retry") => Some("连接后重试"),
+        (Locale::Zh, "browser.offline.setup") => Some("一键安装引导"),
+        (Locale::Zh, "browser.offline.setup_done") => Some("扩展路径已复制。在刚打开的浏览器页面中开启「开发者模式」，再点「加载已解压的扩展程序」并粘贴路径。"),
+        (Locale::Zh, "browser.offline.setup_failed") => Some("未能自动打开浏览器。请自行打开 chrome://extensions 开启开发者模式，并从 Wisp 安装目录加载扩展。"),
         (Locale::Zh, "browser.offline.dismiss") => Some("关闭"),
         (Locale::Zh, "settings.nav.connections") => Some("连接"),
         (Locale::Zh, "settings.nav.channels") => Some("远程接入"),
@@ -4077,15 +4054,6 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "plugins.enable_and_use") => Some("启用并使用"),
         (Locale::Zh, "plugins.start_prompt") => Some("立即使用已启用的「{name}」插件。请找到并调用它用于启动或打开工作台的 MCP 工具，不要只介绍功能。如果启动失败，请直接说明具体错误。"),
         (Locale::Zh, "plugins.start_prompt_guided") => Some("立即使用已启用的「{name}」插件。此消息已附加该插件的技能说明；请遵照说明，立即调用插件工具并打开交互式工作台。不要按插件显示名搜索工具，也不要只介绍功能。如果启动失败，请直接说明具体错误。"),
-        (Locale::Zh, "motif.import_local") => Some("载入 DNA 文件"),
-        (Locale::Zh, "motif.importing") => Some("正在载入…"),
-        (Locale::Zh, "motif.import_hint") => Some("支持 SnapGene DNA、FASTA、GenBank、原始序列和 Motif JSON；直接读取所选文件"),
-        (Locale::Zh, "motif.imported") => Some("已载入"),
-        (Locale::Zh, "motif.selection_to_chat") => Some("将选中序列添加到对话"),
-        (Locale::Zh, "motif.selection_reference") => Some("Motif 序列选区"),
-        (Locale::Zh, "motif.added_file") => Some("已将 {name} 添加到 Motif"),
-        (Locale::Zh, "motif.open_first") => Some("Motif 尚未打开；已把文件和操作说明添加到消息。"),
-        (Locale::Zh, "motif.open_and_add_prompt") => Some("打开 Motif，并将附件 DNA 文件 {name} 添加到当前工作区。"),
         (Locale::Zh, "settings.language") => Some("语言"),
         (Locale::Zh, "settings.language.en") => Some("English"),
         (Locale::Zh, "settings.language.zh") => Some("中文"),
@@ -4394,9 +4362,6 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "trajectory.stats.cache_hit") => Some("缓存命中 {pct}%"),
         (Locale::Zh, "trajectory.stats.input") => Some("输入 {tokens} tok"),
         (Locale::Zh, "trajectory.stats.output") => Some("输出 {tokens} tok"),
-        (Locale::Zh, "trajectory.export") => Some("导出 HTML"),
-        (Locale::Zh, "trajectory.export_saved") => Some("轨迹已保存到 {path}"),
-        (Locale::Zh, "trajectory.export_failed") => Some("无法导出轨迹"),
         (Locale::Zh, "chat.resume") => Some("继续执行"),
         (Locale::Zh, "chat.context_auto_compacted") => Some("上下文已自动压缩"),
         (Locale::Zh, "chat.auto_continued") => Some("输出达到上限，已自动继续（{count}/{limit}）"),
@@ -4538,7 +4503,6 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "ctx.copy_message") => Some("复制消息"),
         (Locale::Zh, "ctx.copy_image") => Some("复制图片"),
         (Locale::Zh, "ctx.attach_file") => Some("附加到对话"),
-        (Locale::Zh, "ctx.add_to_motif") => Some("添加到 Motif"),
         (Locale::Zh, "ctx.attach_directory") => Some("添加文件夹到对话"),
         (Locale::Zh, "ctx.register_artifact") => Some("登记为产物"),
         (Locale::Zh, "ctx.reveal_in_manager") => Some("在文件管理器中打开"),
@@ -5541,37 +5505,6 @@ mod queue_label_tests {
         assert_eq!(t(Locale::Zh, "context_usage.dock"), "停靠面板");
         assert_eq!(t(Locale::En, "context_usage.resize"), "Resize panel");
         assert_eq!(t(Locale::Zh, "context_usage.resize"), "调整面板大小");
-    }
-
-    #[test]
-    fn browser_tab_cleanup_labels_exist_in_both_locales() {
-        assert_eq!(
-            t(Locale::En, "browser.auto_close_tabs"),
-            "Automatically close browser tabs"
-        );
-        assert_eq!(t(Locale::Zh, "browser.auto_close_tabs"), "自动关闭浏览器标签页");
-        assert_eq!(
-            tf(Locale::En, "browser.cleanup.body", &[("n", "18")]),
-            "This turn opened 18 tabs. Selected tabs will be closed. Uncheck any you want to keep."
-        );
-        assert_eq!(
-            tf(Locale::Zh, "browser.cleanup.body", &[("n", "18")]),
-            "本轮 Wisp 打开了 18 个标签页，默认将全部关闭。你可以取消选择需要保留的页面。"
-        );
-    }
-
-    #[test]
-    fn trajectory_export_labels_exist_in_both_locales() {
-        assert_eq!(t(Locale::En, "trajectory.export"), "Export HTML");
-        assert_eq!(t(Locale::Zh, "trajectory.export"), "导出 HTML");
-        assert_eq!(
-            tf(Locale::En, "trajectory.export_saved", &[("path", "/tmp/a.html")]),
-            "Trajectory saved to /tmp/a.html"
-        );
-        assert_eq!(
-            tf(Locale::Zh, "trajectory.export_saved", &[("path", "/tmp/a.html")]),
-            "轨迹已保存到 /tmp/a.html"
-        );
     }
 }
 

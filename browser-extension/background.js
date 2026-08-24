@@ -11,7 +11,7 @@ importScripts(
   "scan_page.js",
   "downloads.js",
   "capture.js",
-  "chat_adapter.js"
+  "chatgpt_adapter.js"
 );
 
 var cfg = readBridgeConfig();
@@ -286,17 +286,17 @@ async function runCommand(tabId, command) {
   }
 }
 
-async function runChatSite(tabId, method, payload) {
+async function runChatgpt(tabId, method, payload) {
   await chrome.scripting.executeScript({
     target: { tabId: tabId },
     world: "MAIN",
-    files: ["chat_adapter.js"]
+    files: ["chatgpt_adapter.js"]
   });
   var injected = await chrome.scripting.executeScript({
     target: { tabId: tabId },
     world: "MAIN",
     func: function (which, prompt) {
-      var api = chatSiteDomFns();
+      var api = chatgptDomFns();
       if (which === "fill") return api.fill(prompt);
       if (which === "send") return api.send();
       if (which === "read") return api.read();
@@ -343,8 +343,8 @@ async function handleRequest(request) {
     }
 
     var result;
-    if (typeof command === "object" && command && (command.cmd === "chat" || command.cmd === "chatgpt")) {
-      result = await runChatSite(request.tabId, command.method || "ready", command);
+    if (typeof command === "object" && command && command.cmd === "chatgpt") {
+      result = await runChatgpt(request.tabId, command.method || "ready", command);
     } else if (typeof command === "string") {
       result = await executeJavaScript(request.tabId, command);
     } else {

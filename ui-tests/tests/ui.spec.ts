@@ -8,7 +8,6 @@ const officeFixtures = {
   pptxBase64: readFileSync(resolve(__dirname, "../fixtures/office-preview.pptx")).toString("base64"),
 };
 const motifAppHtmlPath = process.env.WISP_MOTIF_APP_HTML;
-const snapGeneFixturePath = process.env.WISP_SNAPGENE_FIXTURE;
 
 function providerSelect(page: Page) {
   return page.getByTestId("settings-provider");
@@ -932,35 +931,6 @@ test("switching HTTP models confirms cache invalidation", async ({ page }) => {
     .getByRole("button", { name: "Yes, switch" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_active_model")).toMatchObject({ id: "opus" });
   await expect(page.locator(".model-picker-label")).toHaveText("opus-4.8");
-});
-
-test("model switch confirm consumes Escape before the right pane", async ({ page }) => {
-  await enterApp(page);
-  await composer(page).fill("bind this conversation model");
-  await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
-  await page.getByRole("button", { name: "Toggle panel" }).click();
-  await expect(page.locator(".rightpane")).toBeVisible();
-
-  await page.locator(".model-picker-btn").click();
-  const opusOption = page.getByRole("button", { name: /opus-4\.8/ });
-  await expect(opusOption).toBeVisible();
-  await opusOption.evaluate((element: HTMLElement) => element.click());
-  const modal = page.getByTestId("model-switch-confirm");
-  await expect(modal).toBeVisible();
-
-  // Root-owned confirm participates in the window Escape stack without focus:
-  // one press cancels only the switch, leaving the right pane open and the
-  // session model untouched.
-  await page.keyboard.press("Escape");
-  await expect(modal).toHaveCount(0);
-  await expect(page.locator(".rightpane")).toBeVisible();
-  await expect.poll(() => lastInvokeArgs(page, "set_active_model")).toBeNull();
-  await expect(page.locator(".model-picker-label")).toHaveText("deepseek-v4-pro");
-
-  // The next press reaches the parent layer.
-  await page.keyboard.press("Escape");
-  await expect(page.locator(".rightpane")).toBeHidden();
 });
 
 test("switching to a text-only model confirms historical images will be ignored", async ({ page }) => {
@@ -9395,76 +9365,6 @@ test("browser URL filters persist block and prefer hosts", async ({ page }) => {
   await expect(page.getByTestId("browser-block-list")).toContainText("No blocked hosts.");
 });
 
-test("browser auto-close tabs setting persists", async ({ page }) => {
-  await enterApp(page);
-  await openSettingsSection(page, "Browser");
-  const autoClose = page.getByTestId("browser-auto-close-tabs");
-  await expect(autoClose).not.toBeChecked();
-  await autoClose.locator("..").click();
-  await expect(autoClose).toBeChecked();
-  await page.keyboard.press("Escape");
-  await expect(page.locator(".settings-page")).toHaveCount(0);
-
-  await openSettingsSection(page, "Browser");
-  await expect(page.getByTestId("browser-auto-close-tabs")).toBeChecked();
-});
-
-test("browser tab cleanup confirms selected tabs and Escape keeps them", async ({ page }) => {
-  await enterApp(page);
-  const prompt = {
-    turn_id: "turn-ui",
-    frame_id: "s1",
-    tabs: [
-      { session: "shared", tab_id: 11, url: "https://keep.example/paper", title: "Keep me", initial_url: "https://keep.example" },
-      { session: "shared", tab_id: 12, url: "https://close.example/paper", title: "Close me", initial_url: "https://close.example" },
-    ],
-  };
-  await emitTauriEvent(page, "browser-tab-cleanup", prompt);
-  const dialog = page.getByTestId("browser-tab-cleanup");
-  await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText("This turn opened 2 tabs");
-  await expect(page.getByTestId("browser-tab-cleanup-check-11")).toBeChecked();
-  await expect(page.getByTestId("browser-tab-cleanup-check-12")).toBeChecked();
-  await page.getByTestId("browser-tab-cleanup-check-11").uncheck();
-  await page.getByTestId("browser-tab-cleanup-close").click();
-  await expect(dialog).toHaveCount(0);
-  await expect.poll(async () => page.evaluate(() => {
-    const call = ((window as any).__skillInvokeLog ?? []).find((c: any) => c.cmd === "confirm_browser_tab_cleanup");
-    if (!call) return null;
-    const args = call.args instanceof Map ? Object.fromEntries(call.args) : (call.args ?? {});
-    const tabs = Array.isArray(args.tabs) ? args.tabs.map((tab: any) => tab instanceof Map ? Object.fromEntries(tab) : tab) : [];
-    return { turnId: args.turnId, tabIds: tabs.map((tab: any) => tab.tab_id) };
-  })).toEqual({ turnId: "turn-ui", tabIds: [12] });
-
-  await emitTauriEvent(page, "browser-tab-cleanup", {
-    ...prompt,
-    turn_id: "turn-escape",
-  });
-  await expect(page.getByTestId("browser-tab-cleanup")).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.getByTestId("browser-tab-cleanup")).toHaveCount(0);
-  await expect.poll(async () => page.evaluate(() =>
-    ((window as any).__skillInvokeLog ?? []).some((c: any) => c.cmd === "dismiss_browser_tab_cleanup")
-  )).toBe(true);
-});
-
-test("browser tab cleanup Escape closes only the overlay while settings stay open", async ({ page }) => {
-  await enterApp(page);
-  await openSettingsSection(page, "Browser");
-  await expect(page.getByTestId("browser-url-filters")).toBeVisible();
-  await emitTauriEvent(page, "browser-tab-cleanup", {
-    turn_id: "turn-settings",
-    frame_id: "s1",
-    tabs: [
-      { session: "shared", tab_id: 7, url: "https://example.com", title: "Example", initial_url: "https://example.com" },
-    ],
-  });
-  await expect(page.getByTestId("browser-tab-cleanup")).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.getByTestId("browser-tab-cleanup")).toHaveCount(0);
-  await expect(page.getByTestId("browser-url-filters")).toBeVisible();
-});
-
 test("chat stays pinned to the bottom while streaming a long reply (#61)", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("SCROLLTEST");
@@ -9831,20 +9731,10 @@ test("opening a long conversation lands at the latest message and stays stable o
 
   const readingPosition = await scroller.evaluate((element) => element.scrollTop);
   // Unfollow flips overflow-anchor back to auto, but Chromium only picks a
-  // scroll anchor at layout time. Waiting frames alone is not enough: if no
-  // layout ran in between, the prepend below is never compensated (#663).
-  // Dirty layout with a zero-height node and force a reflow so the anchor is
-  // deterministically armed before the real prepend.
+  // scroll anchor at layout time. Wait for a frame so the anchor is armed —
+  // otherwise a same-frame prepend is never compensated (#663).
   await page.evaluate(
-    () => new Promise((resolve) => {
-      const thread = document.getElementById("chat-thread");
-      const probe = document.createElement("div");
-      probe.style.height = "0px";
-      probe.style.flex = "0 0 0px";
-      thread?.prepend(probe);
-      void (thread as HTMLElement | null)?.offsetHeight;
-      requestAnimationFrame(() => requestAnimationFrame(resolve));
-    }),
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
   );
   await page.evaluate(() => {
     const thread = document.getElementById("chat-thread");
@@ -10152,7 +10042,7 @@ test("HTML artifact modal uses a desktop preview viewport", async ({ page }) => 
 
 test("MCP App opens as a persistent center tab and delivers tool data", async ({ page }) => {
   await enterApp(page);
-  const html = `<!doctype html><html><body><div id="state">waiting</div><div id="sequence">TTTACGTACGTGGG</div><button id="map-mbp" class="motif-pm-feature" data-feature-id="mbp" aria-pressed="false">MBP map feature</button><div id="sequence-pane" class="motif-cs-sequence-column" style="height:80px;overflow:auto"><div style="height:500px"></div><button id="sequence-mbp" class="motif-cs-feature-block" aria-pressed="false">MBP sequence feature</button><div style="height:500px"></div></div><div class="motif-cs-selection-bar"><span class="motif-cs-selection-name">4-11 (8)</span></div><script>
+  const html = `<!doctype html><html><body><div id="state">waiting</div><script>
     const state = document.getElementById("state");
     let initialized = false;
     let contextCapability = false;
@@ -10160,16 +10050,6 @@ test("MCP App opens as a persistent center tab and delivers tool data", async ({
     let contextAcknowledged = false;
     let input = false;
     let result = false;
-    // Production Motif bundles contain HTML closing-tag text inside minified
-    // JavaScript. The host bridge must never splice into this literal.
-    window.__motifEmbeddedClosingBody = "</body>";
-    window.motifGetActiveRecord = () => ({ id: "pet-28a", name: "pET-28a", molecule: "dna", seq: "TTTACGTACGTGGG", annotations: [{ id: "mbp", name: "MBP", start: 4, end: 12, strand: -1 }] });
-    window.motifAddRecords = (records) => { window.__addedMotifRecords = records; };
-    document.getElementById("map-mbp").addEventListener("click", () => {
-      document.getElementById("map-mbp").setAttribute("aria-pressed", "true");
-      document.getElementById("sequence-mbp").setAttribute("aria-pressed", "true");
-      document.querySelector(".motif-cs-selection-name").textContent = "MBP 5-12";
-    });
     const render = () => {
       state.textContent = [initialized, contextCapability, input, result, contextAcknowledged].join(":");
     };
@@ -10229,17 +10109,6 @@ test("MCP App opens as a persistent center tab and delivers tool data", async ({
 
   const app = page.frameLocator('iframe[title="Motif test app"]');
   await expect(app.locator("#state")).toHaveText("true:true:true:true:true");
-  await expect(app.locator("body")).not.toContainText("const reply =");
-  await expect.poll(() => app.locator("body").evaluate(() => (window as any).__motifEmbeddedClosingBody)).toBe("</body>");
-  await expect(app.locator("[data-wisp-motif-selection-length]")).toHaveText("8 bp");
-  await app.locator(".motif-cs-selection-name").evaluate((element) => {
-    element.textContent = "12-3 wrap (6)";
-  });
-  await expect(app.locator("[data-wisp-motif-selection-length]")).toHaveText("6 bp");
-  await app.locator(".motif-cs-selection-name").evaluate((element) => {
-    element.textContent = "4-11 (8)";
-  });
-  await expect(app.locator("[data-wisp-motif-selection-length]")).toHaveText("8 bp");
   await expect.poll(() => lastInvokeArgs(page, "update_mcp_app_context")).toMatchObject({
     instanceId: expect.stringContaining(`mcp-app:${frameId}:`),
     appName: "Motif test app",
@@ -10254,104 +10123,6 @@ test("MCP App opens as a persistent center tab and delivers tool data", async ({
   await expect(appTab).toContainText("Motif test app");
   await expect(page.locator("main.center")).toHaveClass(/split/);
   await expect(page.locator(".center-mcp-app-preview")).toBeVisible();
-
-  // Motif gets a host-owned picker that can read an explicitly selected file
-  // from outside the project and reload the live workbench through its MCP
-  // tool. The local path itself is never sent to the plugin.
-  await page.evaluate(() => {
-    (window as any).__mcpAppLiveBridges = true;
-    (window as any).__mcpAppToolResults = {
-      motif_open_workbench: {
-        content: [],
-        structuredContent: {
-          schema: "motif.mcp.workbench.v1",
-          mode: "artifact",
-          recordCount: 1,
-          residueCount: 8,
-          payload: { records: [{ name: "local", type: "dna", sequence: "ACGTACGT" }] },
-        },
-        isError: false,
-      },
-    };
-  });
-  const chooserPromise = page.waitForEvent("filechooser");
-  await page.getByRole("button", { name: "Load DNA file" }).click();
-  const chooser = await chooserPromise;
-  await chooser.setFiles({
-    name: "existing-local.fasta",
-    mimeType: "text/x-fasta",
-    buffer: Buffer.from(">local\nACGTACGT\n"),
-  });
-  await expect.poll(() => lastInvokeArgs(page, "call_mcp_app_tool")).toMatchObject({
-    name: "motif_open_workbench",
-    arguments: { filename: "existing-local.fasta", content: ">local\nACGTACGT\n" },
-  });
-  await expect(page.locator(".center-mcp-import-status")).toContainText("existing-local.fasta");
-
-  const cookie = Buffer.alloc(5 + 14);
-  cookie[0] = 0x09;
-  cookie.writeUInt32BE(14, 1);
-  cookie.write("SnapGene", 5, "ascii");
-  const snapSequence = Buffer.from("ACGTRYSWKMBDHVN", "ascii");
-  const dnaPacket = Buffer.alloc(5 + 1 + snapSequence.length);
-  dnaPacket[0] = 0x00;
-  dnaPacket.writeUInt32BE(1 + snapSequence.length, 1);
-  dnaPacket[5] = 0x01; // SnapGene flags bit 0 denotes circular topology
-  snapSequence.copy(dnaPacket, 6);
-  const snapChooserPromise = page.waitForEvent("filechooser");
-  await page.getByRole("button", { name: "Load DNA file" }).click();
-  const snapChooser = await snapChooserPromise;
-  await snapChooser.setFiles({
-    name: "pET-28a.dna",
-    mimeType: "application/octet-stream",
-    buffer: Buffer.concat([cookie, dnaPacket]),
-  });
-  await expect.poll(() => lastInvokeArgs(page, "call_mcp_app_tool")).toMatchObject({
-    name: "motif_open_workbench",
-    arguments: {
-      payload: {
-        records: [{
-          name: "pET-28a",
-          type: "dna",
-          topology: "circular",
-          sequence: "ACGTRYSWKMBDHVN",
-          annotations: [],
-        }],
-      },
-    },
-  });
-  await expect(page.locator(".center-mcp-import-status")).toContainText("pET-28a.dna");
-
-  await app.locator("#sequence").evaluate((element) => {
-    const node = element.firstChild!;
-    const range = document.createRange();
-    range.setStart(node, 3);
-    range.setEnd(node, 11);
-    const selection = getSelection()!;
-    selection.removeAllRanges();
-    selection.addRange(range);
-  });
-  // Clicking a control outside an opaque iframe can clear WebView's native
-  // DOM selection. Motif's own rendered range remains authoritative.
-  await app.locator("#sequence").evaluate(() => getSelection()?.removeAllRanges());
-  await page.getByRole("button", { name: "Add selection to chat" }).click();
-  await expect(page.getByTestId("motif-selection-reference")).toContainText("pET-28a");
-  await expect(page.getByTestId("motif-selection-reference")).toContainText("8 bp");
-  await expect(composer(page)).toHaveValue(/Coordinates: 4-11 \(forward\)/);
-  await expect(composer(page)).toHaveValue(/Length: 8 bp/);
-  await expect(composer(page)).toHaveValue(/Sequence: ACGTACGT/);
-
-  await app.locator("#map-mbp").click();
-  await expect.poll(() => app.locator("#sequence-pane").evaluate((element) => element.scrollTop))
-    .toBeGreaterThan(0);
-  await page.getByRole("button", { name: "Add selection to chat" }).click();
-  await expect(page.getByTestId("motif-selection-reference")).toContainText("MBP");
-  await expect(page.getByTestId("motif-selection-reference")).toContainText("8 bp");
-  await expect(app.locator("[data-wisp-motif-selection-length]")).toHaveText("8 bp");
-  await expect(composer(page)).toHaveValue(/Feature: MBP/);
-  await expect(composer(page)).toHaveValue(/Coordinates: 5-12 \(reverse\)/);
-  await expect(composer(page)).toHaveValue(/Length: 8 bp/);
-  await expect(composer(page)).toHaveValue(/Sequence: CGTACGTG/);
 
   // Switching back to the conversation parks the iframe, and returning to
   // the app preserves its live state instead of reloading it.
@@ -10427,77 +10198,6 @@ test("live MCP App tools/call reaches the host without a new agent turn", async 
   expect((await invokeArgsList(page, "send_message")).length).toBe(sendsBefore);
 });
 
-test("repeated MCP App presentations reuse one center tab", async ({ page }) => {
-  await enterApp(page);
-  const appHtml = (state: string) =>
-    `<!doctype html><html><body><div id="state">${state}</div></body></html>`;
-  await composer(page).fill("open the figure library");
-  await page.getByRole("button", { name: "Send" }).click();
-  await expect.poll(() => lastInvokeArgs(page, "send_message")).not.toBeNull();
-  const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
-
-  await emitTauriEvent(page, "agent", {
-    kind: "ToolPresentation",
-    frame_id: frameId,
-    presentation_id: "open-1",
-    presentation_kind: "mcp_app",
-    payload: {
-      tool: { name: "figure_open", title: "Open Scientific Figure Library" },
-      arguments: {},
-      result: { content: [] },
-      resource: { uri: "ui://figure/library.html", text: appHtml("catalog"), _meta: {} },
-    },
-  });
-
-  const figureTab = page.locator(
-    `.center-tab[data-center-path="mcp-app:${frameId}:ui://figure/library.html"]`,
-  );
-  await expect(figureTab).toHaveCount(1);
-  await expect(figureTab).toContainText("Open Scientific Figure Library");
-  await expect(figureTab).toHaveAttribute("title", "Open Scientific Figure Library");
-  await expect(page.frameLocator('iframe[title="Open Scientific Figure Library"]').locator("#state"))
-    .toHaveText("catalog");
-
-  await emitTauriEvent(page, "agent", {
-    kind: "ToolPresentation",
-    frame_id: frameId,
-    presentation_id: "search-2",
-    presentation_kind: "mcp_app",
-    payload: {
-      tool: { name: "figure_search", title: "Search scientific figure templates" },
-      arguments: { q: "survival" },
-      result: { content: [] },
-      resource: {
-        uri: "ui://figure/library.html?q=survival#hits",
-        text: appHtml("survival"),
-        _meta: {},
-      },
-    },
-  });
-
-  await expect(page.locator('.center-tab[data-center-path^="mcp-app:"]')).toHaveCount(1);
-  await expect(figureTab).toContainText("Open Scientific Figure Library");
-  await expect(page.frameLocator('iframe[title="Search scientific figure templates"]').locator("#state"))
-    .toHaveText("survival");
-
-  await emitTauriEvent(page, "agent", {
-    kind: "ToolPresentation",
-    frame_id: frameId,
-    presentation_id: "motif-3",
-    presentation_kind: "mcp_app",
-    payload: {
-      tool: { name: "motif_open_workbench", title: "Motif workbench" },
-      arguments: {},
-      result: { content: [] },
-      resource: { uri: "ui://motif/workbench.html", text: appHtml("motif"), _meta: {} },
-    },
-  });
-
-  await expect(page.locator('.center-tab[data-center-path^="mcp-app:"]')).toHaveCount(2);
-  await expect(page.locator('.center-tab[data-center-path$="ui://motif/workbench.html"]'))
-    .toContainText("Motif workbench");
-});
-
 test("reopening a saved session restores its MCP App workbench", async ({ page }) => {
   const openSavedSession = async () => {
     await page.locator(".proj-card-main").first().click();
@@ -10514,7 +10214,7 @@ test("reopening a saved session restores its MCP App workbench", async ({ page }
   await openSavedSession();
 });
 
-test("real Motif MCP App sends its internal sequence range through the Wisp host", async ({ page }) => {
+test("real Motif MCP App reaches ready state through the Wisp host", async ({ page }) => {
   test.skip(!motifAppHtmlPath, "set WISP_MOTIF_APP_HTML for release acceptance");
   const html = readFileSync(motifAppHtmlPath!, "utf8");
   await enterApp(page);
@@ -10561,121 +10261,7 @@ test("real Motif MCP App sends its internal sequence range through the Wisp host
   }, { frameId, html });
 
   const motif = page.frameLocator('iframe[title="Motif for Claude Science"]');
-  const sequence = motif.locator(".motif-cs-sequence");
-  await expect(sequence).toBeVisible({ timeout: 20_000 });
-  for (let index = 0; index < 8; index += 1) {
-    await sequence.press("Shift+ArrowRight");
-  }
-  await expect(motif.locator(".motif-cs-selection-name")).toHaveText("1-8 (8)");
-  await expect(motif.locator("[data-wisp-motif-selection-length]")).toHaveText("8 bp");
-
-  const active = await sequence.evaluate(() => {
-    const record = (window as any).motifGetActiveRecord();
-    getSelection()?.removeAllRanges();
-    return { name: record.name, sequence: record.seq.slice(0, 8) };
-  });
-  await page.getByRole("button", { name: "Add selection to chat" }).click();
-  await expect(page.getByTestId("motif-selection-reference")).toContainText(active.name);
-  await expect(page.getByTestId("motif-selection-reference")).toContainText("8 bp");
-  await expect(composer(page)).toHaveValue(/Coordinates: 1-8 \(forward\)/);
-  await expect(composer(page)).toHaveValue(/Length: 8 bp/);
-  await expect(composer(page)).toHaveValue(new RegExp(`Sequence: ${active.sequence}`));
-});
-
-test("real SnapGene annotations render in the real Motif MCP App", async ({ page }) => {
-  test.skip(!motifAppHtmlPath || !snapGeneFixturePath,
-    "set WISP_MOTIF_APP_HTML and WISP_SNAPGENE_FIXTURE for release acceptance");
-  const html = readFileSync(motifAppHtmlPath!, "utf8");
-  await enterApp(page);
-  await composer(page).fill("open annotated Motif acceptance");
-  await page.getByRole("button", { name: "Send" }).click();
-  await expect.poll(() => lastInvokeArgs(page, "send_message")).not.toBeNull();
-  const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
-  await page.evaluate(({ frameId, html }) => {
-    (window as any).__tauriEmit("agent", {
-      kind: "ToolPresentation",
-      frame_id: frameId,
-      presentation_kind: "mcp_app",
-      payload: {
-        tool: { name: "motif_open_workbench", title: "Motif annotated acceptance" },
-        arguments: { content: ">seed\nACGT", filename: "seed.fasta" },
-        result: {
-          content: [],
-          structuredContent: {
-            schema: "motif.mcp.workbench.v1",
-            payload: { records: [{ name: "seed", type: "dna", sequence: "ACGT" }] },
-          },
-          isError: false,
-        },
-        resource: { uri: "ui://motif/workbench.html", text: html, _meta: {} },
-      },
-    });
-    (window as any).__mcpAppLiveBridges = true;
-    (window as any).__mcpAppToolResults = {
-      motif_open_workbench: { content: [], structuredContent: { payload: { records: [] } }, isError: false },
-    };
-  }, { frameId, html });
-
-  const motif = page.frameLocator('iframe[title="Motif annotated acceptance"]');
-  await expect(motif.locator(".motif-cs-sequence")).toBeVisible({ timeout: 20_000 });
-  const chooserPromise = page.waitForEvent("filechooser");
-  await page.getByRole("button", { name: "Load DNA file" }).click();
-  const chooser = await chooserPromise;
-  await chooser.setFiles(snapGeneFixturePath!);
-  await expect.poll(() => lastInvokeArgs(page, "call_mcp_app_tool")).not.toBeNull();
-  const call = await lastInvokeArgs(page, "call_mcp_app_tool");
-  const record = call.arguments.payload.records[0];
-  expect(record.topology).toBe("circular");
-  expect(record.sequence.length).toBe(11_891);
-  expect(record.annotations.length).toBeGreaterThanOrEqual(30);
-  expect(record.annotations.map((annotation: any) => annotation.name)).toEqual(
-    expect.arrayContaining(["T7 promoter", "RBS", "KanR", "ori", "lacI"]),
-  );
-  expect(record.annotations.find((annotation: any) => annotation.name === "KanR")).toMatchObject({
-    type: "cds",
-    strand: -1,
-    color: expect.stringMatching(/^#/),
-  });
-
-  const rendered = await motif.locator("html").evaluate(async (_element, importedRecord) => {
-    await (window as any).motifAddRecords([importedRecord]);
-    const active = (window as any).motifGetActiveRecord();
-    return {
-      name: active.name,
-      length: active.length,
-      annotations: active.annotations.map((annotation: any) => annotation.name),
-    };
-  }, record);
-  expect(rendered.name).toBe("pET-28a-250kd");
-  expect(rendered.length).toBe(11_891);
-  expect(rendered.annotations.length).toBeGreaterThanOrEqual(30);
-  expect(rendered.annotations).toEqual(expect.arrayContaining(["T7 promoter", "KanR", "lacI"]));
-  await expect(motif.locator("body")).toContainText("KanR");
-
-  const mbp = record.annotations.find((annotation: any) => annotation.name === "MBP");
-  expect(mbp).toBeTruthy();
-  await motif.locator(`.motif-pm-feature[data-feature-id="${mbp.id}"]`).press("Enter");
-  await expect(motif.locator(".motif-cs-selection-name")).toContainText("MBP");
-  const mbpLength = mbp.end - mbp.start;
-  await expect(motif.locator("[data-wisp-motif-selection-length]")).toHaveText(`${mbpLength} bp`);
-  await expect.poll(() => motif.locator(".motif-cs-sequence-column").evaluate((pane) => {
-    const block = pane.querySelector(".motif-cs-feature-block[aria-pressed=\'true\']");
-    if (!block) return false;
-    const blockRect = block.getBoundingClientRect();
-    const paneRect = pane.getBoundingClientRect();
-    return blockRect.top >= paneRect.top && blockRect.bottom <= paneRect.bottom;
-  })).toBe(true);
-  await page.getByRole("button", { name: "Add selection to chat" }).click();
-  await expect(page.getByTestId("motif-selection-reference")).toContainText("MBP");
-  await expect(page.getByTestId("motif-selection-reference")).toContainText(`${mbpLength} bp`);
-  await expect(composer(page)).toHaveValue(/Feature: MBP/);
-  await expect(composer(page)).toHaveValue(new RegExp(`Length: ${mbpLength} bp`));
-  await expect(composer(page)).toHaveValue(
-    new RegExp(`Coordinates: ${mbp.start + 1}-${mbp.end} \\(${mbp.strand === -1 ? "reverse" : "forward"}\\)`),
-  );
-  await expect(composer(page)).toHaveValue(
-    new RegExp(`Sequence: ${record.sequence.slice(mbp.start, mbp.end)}`),
-  );
+  await expect(motif.locator("html")).toHaveAttribute("data-motif-mcp-state", "ready", { timeout: 20_000 });
 });
 
 test("Markdown artifact modal opens its rendered preview in center", async ({ page }) => {

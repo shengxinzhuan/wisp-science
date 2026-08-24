@@ -104,7 +104,6 @@ mod ssh_master;
 mod storage_prefs;
 mod terminal_sessions;
 mod trajectory;
-mod trajectory_export;
 mod turn_memory;
 mod turn_undo;
 mod video_generation_tool;
@@ -2206,10 +2205,7 @@ async fn update_mcp_app_context(
 }
 
 /// Hard ceiling on a single MCP App `tools/call` argument JSON blob.
-// Live scientific viewers can legitimately receive bounded sequence payloads
-// (Motif caps text input at 2,000,000 bytes). Keep this below the result cap
-// while allowing the host's explicit local-file import path.
-const MAX_MCP_APP_ARGUMENT_BYTES: usize = 3 * 1024 * 1024;
+const MAX_MCP_APP_ARGUMENT_BYTES: usize = 256 * 1024;
 /// Hard ceiling on a single MCP App `tools/call` result JSON blob.
 const MAX_MCP_APP_RESULT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_MCP_APP_TOOL_NAME_BYTES: usize = 256;
@@ -2603,8 +2599,6 @@ struct TauriOutput {
     /// same scope are not foreign to each other when disambiguating
     /// concurrent workspace writes (#911).
     provenance_scope: String,
-    /// Per-send_message id used to attribute real-browser tabs to this turn.
-    turn_id: String,
 }
 
 impl TauriOutput {
@@ -2808,11 +2802,10 @@ impl Output for TauriOutput {
         let presentation_id = Uuid::new_v4().to_string();
         if kind == "mcp_app" && !payload.is_null() {
             if let Some(server) = server {
-                // Same formula as ui/src/mcp_app.rs: resource URI (or tool
-                // name), not the unique presentation UUID, so a later Open/
-                // Search of the same app replaces the live bridge instead of
-                // stacking another center tab.
-                let instance_id = mcp_app_instance_id(&self.frame_id, payload);
+                // The frontend derives the instance id from the same frame id
+                // and presentation id (ui/src/mcp_app.rs), so the host-side
+                // bridge stays keyed exactly like the mounted iframe.
+                let instance_id = format!("mcp-app:{}:{}", self.frame_id, presentation_id);
                 self.app.state::<AppState>().register_mcp_app_bridge(
                     instance_id,
                     McpAppToolBridge {
@@ -3016,12 +3009,6 @@ impl Output for TauriOutput {
     }
     fn provenance_scope(&self) -> Option<String> {
         Some(self.provenance_scope.clone())
-    }
-    fn turn_id(&self) -> Option<&str> {
-        Some(self.turn_id.as_str())
-    }
-    fn frame_id(&self) -> Option<&str> {
-        Some(self.frame_id.as_str())
     }
     fn preflight_local_execution(&self, source: &str) -> Result<(), String> {
         match &self.exploration_isolation {
@@ -5314,6 +5301,10 @@ async fn automatic_review(
                 agent.ctx.clear_runtime_injections();
                 if let Err(error) = correction {
                     tracing::warn!("automatic correction failed for {frame_id}: {error}");
+                    output.emit(AgentEvent::ReviewFailed {
+                        frame_id: frame_id.to_string(),
+                        message: format!("correction turn failed: {error}"),
+                    });
                     report.set_status("unaddressed");
                 } else {
                     match generate_review(state, frame_id, &agent.ctx.messages, Some(cancel)).await
@@ -5325,6 +5316,10 @@ async fn automatic_review(
                             tracing::warn!(
                                 "automatic follow-up review failed for {frame_id}: {error}"
                             );
+                            output.emit(AgentEvent::ReviewFailed {
+                                frame_id: frame_id.to_string(),
+                                message: format!("follow-up review failed: {error}"),
+                            });
                             report.set_status("unaddressed");
                         }
                     }
@@ -5405,6 +5400,13 @@ async fn automatic_review_acp(
                         .await;
                 if let Err(error) = correction {
                     tracing::warn!("automatic ACP correction failed for {frame_id}: {error}");
+                    emit_agent_event(
+                        app,
+                        AgentEvent::ReviewFailed {
+                            frame_id: frame_id.to_string(),
+                            message: format!("correction turn failed: {error}"),
+                        },
+                    );
                     report.set_status("unaddressed");
                 } else {
                     match state.store.load_messages(frame_id).await {
@@ -5417,6 +5419,13 @@ async fn automatic_review_acp(
                                     tracing::warn!(
                                     "automatic ACP follow-up review failed for {frame_id}: {error}"
                                 );
+                                    emit_agent_event(
+                                        app,
+                                        AgentEvent::ReviewFailed {
+                                            frame_id: frame_id.to_string(),
+                                            message: format!("follow-up review failed: {error}"),
+                                        },
+                                    );
                                     report.set_status("unaddressed");
                                 }
                             }
@@ -5424,6 +5433,13 @@ async fn automatic_review_acp(
                         Err(error) => {
                             tracing::warn!(
                                 "load corrected ACP transcript failed for {frame_id}: {error}"
+                            );
+                            emit_agent_event(
+                                app,
+                                AgentEvent::ReviewFailed {
+                                    frame_id: frame_id.to_string(),
+                                    message: format!("load corrected transcript failed: {error}"),
+                                },
                             );
                             report.set_status("unaddressed");
                         }
@@ -6031,6 +6047,80 @@ pub(crate) fn startup_report_summary() -> String {
         .unwrap_or_default()
 }
 
+/// UI heartbeat watchdog: the frontend pings `ui_heartbeat` from a timer, so
+/// the stream stops exactly when the renderer dies or its main thread wedges
+/// (WebView2 process crash, WASM panic under `panic = "abort"`, or a long
+/// full-window stall). Tauri exposes no `ProcessFailed` event, so silence is
+/// the signal. When a focused main window goes silent past the staleness
+/// budget, reload the webview — sessions live in SQLite, so a reload is the
+/// cheapest recovery from a permanently white window ("window died, tasks
+/// still running" reports).
+static UI_HEARTBEAT: StdMutex<Option<std::time::Instant>> = StdMutex::new(None);
+static UI_WATCHDOG_LAST_RELOAD: StdMutex<Option<std::time::Instant>> = StdMutex::new(None);
+const UI_HEARTBEAT_STALE: std::time::Duration = std::time::Duration::from_secs(60);
+const UI_WATCHDOG_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(120);
+
+#[tauri::command]
+fn ui_heartbeat() {
+    if let Ok(mut last) = UI_HEARTBEAT.lock() {
+        *last = Some(std::time::Instant::now());
+    }
+}
+
+/// Pure decision for the watchdog so the timing thresholds stay testable:
+/// reload only when beats existed, stopped for longer than the stale budget,
+/// and the previous recovery (if any) is outside its cooldown.
+fn ui_watchdog_requires_reload(
+    secs_since_beat: Option<u64>,
+    secs_since_reload: Option<u64>,
+) -> bool {
+    match secs_since_beat {
+        Some(secs) if secs >= UI_HEARTBEAT_STALE.as_secs() => match secs_since_reload {
+            Some(secs) => secs >= UI_WATCHDOG_COOLDOWN.as_secs(),
+            None => true,
+        },
+        _ => false,
+    }
+}
+
+async fn run_ui_watchdog(app: tauri::AppHandle) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        let secs_since_beat = UI_HEARTBEAT
+            .lock()
+            .ok()
+            .and_then(|last| last.map(|instant| instant.elapsed().as_secs()));
+        let secs_since_reload = UI_WATCHDOG_LAST_RELOAD
+            .lock()
+            .ok()
+            .and_then(|last| last.map(|instant| instant.elapsed().as_secs()));
+        if !ui_watchdog_requires_reload(secs_since_beat, secs_since_reload) {
+            continue;
+        }
+        let Some(window) = app.get_webview_window("main") else {
+            continue;
+        };
+        // A backgrounded/minimized window cannot beat (timers are throttled),
+        // and a sleeping machine accumulates elapsed time harmlessly — only
+        // rescue a window the user is actually looking at.
+        if !window.is_focused().unwrap_or(false) {
+            continue;
+        }
+        tracing::warn!(target: "wisp", secs_since_beat = secs_since_beat.unwrap_or_default(),
+            "main webview stopped heartbeating; reloading to recover the UI");
+        if window.reload().is_ok() {
+            if let Ok(mut last) = UI_WATCHDOG_LAST_RELOAD.lock() {
+                *last = Some(std::time::Instant::now());
+            }
+            // Require fresh beats before watching again, so a window that
+            // dies during recovery is not reloaded in a tight loop.
+            if let Ok(mut last) = UI_HEARTBEAT.lock() {
+                *last = None;
+            }
+        }
+    }
+}
+
 /// Windows creates the main WebView2 before `setup` runs but cannot service it
 /// until the event loop pumps messages, so everything `setup` does on the way
 /// to the first paint is time the user spends looking at a blank window. Record
@@ -6305,6 +6395,7 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             let main_builder = main_builder.decorations(false).shadow(true);
             main_builder.build().expect("create main window");
+            tauri::async_runtime::spawn(run_ui_watchdog(app.handle().clone()));
             let mut startup = StartupTimeline::default();
             if let Ok(res) = app.path().resource_dir() {
                 wisp_paths::set_resource_root(res);
@@ -6719,7 +6810,6 @@ pub fn run() {
             publication_freeze::freeze_publication_revision,
             session_commands::load_session,
             session_commands::load_session_trajectory,
-            trajectory_export::export_session_trajectory,
             session_commands::rewind_session,
             turn_undo::preview_turn_undo,
             turn_undo::undo_turn,
@@ -6750,11 +6840,6 @@ pub fn run() {
             browser_url_filters::set_browser_url_filters,
             browser_url_filters::get_browser_auto_launch,
             browser_url_filters::set_browser_auto_launch,
-            browser_url_filters::get_browser_auto_close_tabs,
-            browser_url_filters::set_browser_auto_close_tabs,
-            browser_bridge::list_pending_browser_tab_cleanups,
-            browser_bridge::confirm_browser_tab_cleanup,
-            browser_bridge::dismiss_browser_tab_cleanup,
             settings_commands::get_settings,
             settings_commands::set_settings,
             configure::get_appearance_prefs,
@@ -6844,6 +6929,8 @@ pub fn run() {
             app_updates::download_update,
             app_updates::install_update,
             app_commands::open_external_url,
+            app_commands::open_browser_extension_page,
+            ui_heartbeat,
             app_commands::reveal_in_file_manager,
             connector_commands::list_mcp_connections,
             connector_commands::add_mcp_connection,

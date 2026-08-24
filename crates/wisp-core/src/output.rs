@@ -122,14 +122,6 @@ pub trait Output: Send + Sync {
     fn provenance_scope(&self) -> Option<String> {
         None
     }
-    /// Host-owned id of the in-flight user-visible turn. Default `None`.
-    fn turn_id(&self) -> Option<&str> {
-        None
-    }
-    /// Conversation frame this loop belongs to. Default `None`.
-    fn frame_id(&self) -> Option<&str> {
-        None
-    }
     /// Hard host-owned boundary checked before free-form source reaches a
     /// local shell or language runtime.
     fn preflight_local_execution(&self, _source: &str) -> Result<(), String> {
@@ -269,12 +261,6 @@ impl<'a> wisp_tools::ToolEnv for ToolEnvAdapter<'a> {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .extend(paths.iter().cloned());
-    }
-    fn turn_id(&self) -> Option<&str> {
-        self.out.turn_id()
-    }
-    fn frame_id(&self) -> Option<&str> {
-        self.out.frame_id()
     }
     async fn emit(&self, event: wisp_tools::ToolEvent) {
         match event {

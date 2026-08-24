@@ -115,6 +115,7 @@ impl AnthropicProvider {
             }
         }
         flush_tool_results(&mut pending_tool_results, &mut out);
+        let out = normalize_wire(out);
 
         let mut body = json!({
             "model": self.cfg.model,
@@ -159,59 +160,124 @@ impl AnthropicProvider {
     }
 }
 
-/// Keep only tool-call pairings Anthropic accepts.
-///
-/// A turn interrupted after the assistant emitted `tool_use` but before its
-/// `tool_result` was persisted leaves a dangling id. Anthropic rejects that
-/// with a 400 when the next user turn arrives; strip unanswered calls (and
-/// orphan results) the same way as OpenAI chat-completions / Responses.
-fn sanitize_messages(messages: &[Message]) -> Vec<Message> {
-    let mut answered = std::collections::HashSet::new();
-    let mut requested = std::collections::HashSet::new();
-    for m in messages {
-        match m.role {
-            Role::Tool => {
-                if let Some(id) = &m.tool_call_id {
-                    answered.insert(id.clone());
-                }
+/// Anthropic rejects consecutive same-role messages and empty transcripts,
+/// both of which a replayed cross-provider history can produce: a tool-result
+/// flush followed by a real user turn, guidance stacked after an interrupted
+/// turn, or a transcript fully emptied by `sanitize_messages`. Merge
+/// neighbours, then pad with a placeholder user turn when nothing is left.
+fn normalize_wire(messages: Vec<Value>) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    for message in messages {
+        if let Some(last) = out.last_mut() {
+            if last["role"] == message["role"] {
+                merge_wire_content(last, &message);
+                continue;
             }
-            Role::Assistant => {
-                for tc in &m.tool_calls {
-                    requested.insert(tc.id.clone());
-                }
-            }
-            _ => {}
+        }
+        out.push(message);
+    }
+    if out.first().and_then(|m| m["role"].as_str()) != Some("user") {
+        out.insert(0, json!({ "role": "user", "content": " " }));
+    }
+    out
+}
+
+/// Concatenate two same-role wire messages. String content lifts to a text
+/// block so user text can share one message with `tool_result` blocks.
+fn merge_wire_content(into: &mut Value, from: &Value) {
+    fn blocks(content: &Value) -> Vec<Value> {
+        match content {
+            Value::String(text) => vec![json!({ "type": "text", "text": text })],
+            Value::Array(items) => items.clone(),
+            _ => Vec::new(),
         }
     }
-    messages
-        .iter()
-        .filter_map(|m| match m.role {
+    let mut merged = blocks(&into["content"]);
+    merged.extend(blocks(&from["content"]));
+    into["content"] = json!(merged);
+}
+
+/// Shape a replayed transcript into something Anthropic accepts.
+///
+/// Histories are replayed verbatim across providers on a model switch, and
+/// OpenAI-tolerant shapes 400 here. Beyond chat-completions #74 (unanswered
+/// calls), this pass guarantees the stricter Messages-API invariants:
+/// - the first non-system message is a user turn — leading assistant turns
+///   are dropped, and their tool results become orphans that the positional
+///   pairing below then removes;
+/// - a `tool_use` counts as answered only when its `tool_result` sits in the
+///   Tool messages *immediately* after it — id-set matching is not enough
+///   when guidance or a resumed turn lands between call and result;
+/// - no empty-text-only assistant survives.
+/// Consecutive same-role merging happens later on the wire (`normalize_wire`),
+/// because a tool-result flush and a real user turn only become adjacent
+/// after conversion.
+fn sanitize_messages(messages: &[Message]) -> Vec<Message> {
+    let kept: Vec<Message> = match messages.iter().position(|m| m.role == Role::User) {
+        Some(first_user) => messages
+            .iter()
+            .enumerate()
+            .filter(|(i, m)| m.role == Role::System || *i >= first_user)
+            .map(|(_, m)| m.clone())
+            .collect(),
+        None => messages
+            .iter()
+            .filter(|m| m.role == Role::System)
+            .cloned()
+            .collect(),
+    };
+
+    let mut out: Vec<Message> = Vec::new();
+    let mut i = 0;
+    while i < kept.len() {
+        match kept[i].role {
             Role::Assistant => {
-                let mut out = m.clone();
-                out.tool_calls.retain(|tc| answered.contains(&tc.id));
-                if out.content.as_text().is_empty() && out.tool_calls.is_empty() {
-                    None
-                } else {
-                    Some(out)
+                let mut end = i + 1;
+                let mut answered = std::collections::HashSet::new();
+                while end < kept.len() && kept[end].role == Role::Tool {
+                    if let Some(id) = &kept[end].tool_call_id {
+                        answered.insert(id.clone());
+                    }
+                    end += 1;
                 }
-            }
-            Role::Tool => {
-                let id = m.tool_call_id.as_deref().unwrap_or("");
-                if requested.contains(id) {
-                    Some(m.clone())
-                } else {
-                    None
+                let mut asst = kept[i].clone();
+                asst.tool_calls.retain(|tc| answered.contains(&tc.id));
+                if asst.content.as_text().is_empty() && asst.tool_calls.is_empty() {
+                    // Emptied turn: drop it together with its orphaned results.
+                    i = end;
+                    continue;
                 }
+                let live: std::collections::HashSet<String> =
+                    asst.tool_calls.iter().map(|tc| tc.id.clone()).collect();
+                out.push(asst);
+                out.extend(
+                    kept[i + 1..end]
+                        .iter()
+                        .filter(|m| live.contains(m.tool_call_id.as_deref().unwrap_or("")))
+                        .cloned(),
+                );
+                i = end;
             }
-            _ => Some(m.clone()),
-        })
-        .collect()
+            // A Tool message anywhere but right after an assistant turn is an
+            // orphan Anthropic would reject.
+            Role::Tool => i += 1,
+            _ => {
+                out.push(kept[i].clone());
+                i += 1;
+            }
+        }
+    }
+    out
 }
 
 fn user_content(c: &Content) -> Value {
     match c {
-        Content::Text(s) => json!(s),
+        // Anthropic rejects empty text; mirror the assistant " " fallback.
+        Content::Text(s) => json!(if s.is_empty() { " " } else { s }),
         Content::Parts(parts) => {
+            if parts.is_empty() {
+                return json!(" ");
+            }
             let arr: Vec<Value> = parts
                 .iter()
                 .map(|p| match p {
@@ -616,8 +682,117 @@ mod tests {
             tool_uses.is_empty(),
             "unanswered tool_use must not be sent: {out:?}"
         );
-        assert_eq!(out.last().unwrap()["role"], "user");
-        assert_eq!(out.last().unwrap()["content"], "继续");
+        // The emptied assistant turn is dropped and the two user turns merge
+        // into one, so the wire alternation holds.
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["role"], "user");
+        let texts: Vec<_> = out[0]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|b| b["text"].as_str())
+            .collect();
+        assert_eq!(texts, ["poll training", "继续"]);
+    }
+
+    /// Guidance arriving right after tool results: the tool_result flush and
+    /// the real user turn would sit as two consecutive user messages, which
+    /// Anthropic rejects. They must merge into one.
+    #[test]
+    fn tool_result_flush_merges_with_following_user_turn() {
+        let messages = vec![
+            Message::user("run"),
+            assistant_with_call("", "tu_1", "shell", "{\"cmd\":\"go\"}"),
+            Message::tool("tu_1", "shell", "ok"),
+            Message::user("继续"),
+        ];
+        let out = wire_messages(&messages);
+        let roles: Vec<_> = out.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, ["user", "assistant", "user"]);
+        let blocks = out[2]["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "tool_result");
+        assert_eq!(blocks[0]["tool_use_id"], "tu_1");
+        assert_eq!(blocks[1]["type"], "text");
+        assert_eq!(blocks[1]["text"], "继续");
+    }
+
+    #[test]
+    fn consecutive_user_turns_merge_into_one() {
+        let messages = vec![
+            Message::user("first"),
+            Message::user("second"),
+            Message::user("third"),
+        ];
+        let out = wire_messages(&messages);
+        assert_eq!(out.len(), 1);
+        let texts: Vec<_> = out[0]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|b| b["text"].as_str())
+            .collect();
+        assert_eq!(texts, ["first", "second", "third"]);
+    }
+
+    /// Anthropic insists the first message uses the user role.
+    #[test]
+    fn leading_assistant_turns_are_dropped() {
+        let messages = vec![Message::assistant("stale opener"), Message::user("hi")];
+        let out = wire_messages(&messages);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["role"], "user");
+        assert_eq!(out[0]["content"], "hi");
+    }
+
+    /// A leading assistant's answered tool pair must drop together with it —
+    /// keeping the result alone would strand a tool_result with no tool_use.
+    #[test]
+    fn leading_assistant_tool_pair_drops_together() {
+        let messages = vec![
+            assistant_with_call("", "tu_old", "read", "{}"),
+            Message::tool("tu_old", "read", "ok"),
+            Message::user("hi"),
+        ];
+        let out = wire_messages(&messages);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["role"], "user");
+        let blob = serde_json::to_string(&out).unwrap();
+        assert!(!blob.contains("tool_use"));
+        assert!(!blob.contains("tool_result"));
+    }
+
+    /// A user turn landing between call and result breaks the adjacency
+    /// Anthropic requires; the stranded pair must be stripped positionally.
+    #[test]
+    fn interleaved_user_turn_breaks_pairing_positionally() {
+        let messages = vec![
+            Message::user("hi"),
+            assistant_with_call("", "tu_1", "read", "{}"),
+            Message::user("guidance"),
+            Message::tool("tu_1", "read", "late"),
+        ];
+        let out = wire_messages(&messages);
+        let roles: Vec<_> = out.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, ["user"]);
+        let blob = serde_json::to_string(&out).unwrap();
+        assert!(!blob.contains("tool_use"));
+        assert!(!blob.contains("tool_result"));
+    }
+
+    #[test]
+    fn empty_user_text_gets_a_placeholder() {
+        let out = wire_messages(&[Message::user(""), Message::assistant("ok")]);
+        assert_eq!(out[0]["role"], "user");
+        assert_eq!(out[0]["content"], " ");
+    }
+
+    /// A transcript that sanitize empties entirely must still produce the
+    /// minimum one user message, not an Anthropic-rejected empty array.
+    #[test]
+    fn fully_sanitized_transcript_still_sends_a_user_message() {
+        let out = wire_messages(&[Message::assistant("nothing survives")]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["role"], "user");
     }
 
     #[test]

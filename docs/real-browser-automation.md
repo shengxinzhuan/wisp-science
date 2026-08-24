@@ -45,15 +45,6 @@ Wisp starts that installed browser with the existing user profile so the
 unpacked extension can reconnect. Turn the setting off to keep Wisp from
 launching a browser.
 
-**Settings → Browser → Automatically close browser tabs** is off by default.
-Wisp records tabs it created during the current turn (by `tab_id`, including
-after in-tab navigation) and never includes tabs that were already open.
-When the setting is on, those tabs are closed when the turn ends (completed,
-stopped, or failed). When it is off, a confirmation lists them, all selected
-by default; uncheck any to keep, then close the rest or keep all. If the
-extension is disconnected at the end of the turn, the pending list is kept
-until it reconnects.
-
 The banner describes the answer on screen, not the session. It is derived from
 the browser tool results of the latest turn only, and a single successful
 `web_scan`, `web_open_tab`, `web_execute_js`, or `web_screenshot` clears it: the
@@ -142,11 +133,6 @@ These settings must be changed manually because internal settings pages such as
   for document `complete` before capturing. It captures the viewport only;
   scroll with `web_execute_js` to reach content below the fold. It needs a
   vision-capable model configured in **Settings → Models**, like `view_image`.
-- `web_agent_send` / `web_agent_wait` / `web_agent_read`: one-shot send, wait,
-  and read against an already-logged-in in-browser chat tab. Supported HTTPS
-  hosts are `chatgpt.com` / `chat.openai.com`, `gemini.google.com`, and
-  `google.com` with `udm=50` (Google AI Mode). Login and CAPTCHA pages stop
-  for the user; Wisp does not type passwords or bypass those gates.
 
 Both tools normally require at least one Wisp approval. The approval can be
 granted once, for the session, for the project, or globally through the existing

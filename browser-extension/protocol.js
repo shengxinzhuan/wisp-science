@@ -11,8 +11,7 @@ var WISP_PROTOCOL = {
     "conditional_wait",
     "session",
     "pause_control",
-    "chatgpt_turn",
-    "chat_turn"
+    "chatgpt_turn"
   ]
 };
 

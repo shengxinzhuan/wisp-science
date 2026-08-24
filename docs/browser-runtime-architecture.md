@@ -69,20 +69,17 @@ The extension never writes project directories and never returns large base64 fi
 - Browser Task Lease (`last_session` + explicit `session`)
 - Copies staged files into the project and hashes SHA-256
 - Starts/stops the workspace browser window and verifies it connected
-- Per-turn ledger of tabs Wisp created (`web_open_tab` / tab-create), closed at turn end or confirmed in the UI
 - Records the last refused connection so an unclaimed extension has a reason
-- In-browser chat one-shot (`web_agent_send` / `wait` / `read`) on an
-  already-logged-in ChatGPT, Gemini, or Google AI Mode tab
+- ChatGPT one-shot send/wait/read on an already-logged-in tab
 
 Playwright is not used. The user's daily Chrome User Data directory is never passed as `--user-data-dir`.
 
 ## Safety checks
 
-- `web_agent_*` accepts only already-open HTTPS tabs at `chatgpt.com` /
-  `chat.openai.com`, `gemini.google.com`, or `google.com` with `udm=50`
-  (Google AI Mode). Lookalike hosts such as `chatgpt.com.evil.com` or
-  `gemini.google.com.evil.com` are rejected before any prompt is filled.
-  Ordinary `google.com/search` tabs without `udm=50` are not treated as chat.
+- `web_agent_*` accepts only tabs whose parsed URL host is exactly
+  `chatgpt.com` / `chat.openai.com` (optionally `www.`) over HTTPS. Lookalike
+  hosts such as `chatgpt.com.evil.com` are rejected before any prompt is
+  filled.
 - `web_save_assets` `dest_dir` and `web_screenshot` `save_path` must be
   project-relative: absolute paths and `..` segments are rejected, so tool
   arguments cannot write outside the project root.

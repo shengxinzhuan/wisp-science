@@ -136,7 +136,17 @@ impl OpenAiProvider {
                             tc
                         })
                         .collect();
-                    let mut o = json!({ "role": "assistant", "content": m.content.as_text() });
+                    let text = m.content.as_text();
+                    // Reasoning-only / interrupted turns persist as empty
+                    // assistant messages and replay as `content: ""`, which
+                    // strict endpoints reject — kimi-k3 400s with "the message
+                    // ... must not be empty" (verified live; DeepSeek
+                    // tolerates it). Nothing replayable is left, so drop the
+                    // turn. Empty text alongside tool_calls is fine on both.
+                    if kept.is_empty() && text.is_empty() {
+                        return None;
+                    }
+                    let mut o = json!({ "role": "assistant", "content": text });
                     if !kept.is_empty() {
                         o["tool_calls"] = serde_json::to_value(&kept).unwrap_or(Value::Null);
                     }
@@ -1000,6 +1010,36 @@ mod tests {
             out[0]["tool_calls"][0]["function"]["arguments"],
             "{\"path\":\"/tmp/x\"}"
         );
+    }
+
+    /// Reasoning-only / interrupted turns persist as empty assistant messages;
+    /// replayed as `content: ""` they 400 on strict endpoints (kimi-k3: "the
+    /// message ... must not be empty", verified live). With nothing
+    /// replayable left, the turn must be dropped.
+    #[test]
+    fn drops_empty_assistant_turn_without_tool_calls() {
+        let msgs = vec![
+            Message::user("hi"),
+            Message::assistant(""),
+            Message::user("continue"),
+        ];
+        let out = OpenAiProvider::sanitize(&msgs);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|m| m["role"] != "assistant"));
+    }
+
+    /// Empty text alongside tool_calls is accepted by both DeepSeek and kimi
+    /// (verified live), so the call turn stays — only truly empty turns drop.
+    #[test]
+    fn keeps_empty_text_assistant_with_answered_tool_calls() {
+        let mut asst = Message::assistant("");
+        asst.tool_calls = vec![call("a")];
+        let msgs = vec![Message::user("run"), asst, Message::tool("a", "read", "ok")];
+        let out = OpenAiProvider::sanitize(&msgs);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[1]["role"], "assistant");
+        assert_eq!(out[1]["content"], "");
+        assert_eq!(out[1]["tool_calls"].as_array().unwrap().len(), 1);
     }
 
     #[test]

@@ -1045,7 +1045,6 @@ pub(crate) async fn send_message_inner(
 
     let provenance_scope =
         crate::native_delegation::conversation_scope(&state.store, &frame_id).await;
-    let browser_turn_id = Uuid::new_v4().to_string();
     let output = TauriOutput {
         app: app.clone(),
         frame_id: frame_id.clone(),
@@ -1071,7 +1070,6 @@ pub(crate) async fn send_message_inner(
         message_seq: std::sync::atomic::AtomicI64::new(start_seq),
         prov: Some(prov_tx),
         provenance_scope,
-        turn_id: browser_turn_id.clone(),
     };
 
     let turn_start = agent.ctx.messages.len();
@@ -1194,7 +1192,6 @@ pub(crate) async fn send_message_inner(
                 },
             )
             .await;
-            emit_browser_tab_cleanup(state, &app, &browser_turn_id).await;
             Ok(frame_id)
         }
         Err(e) => {
@@ -1214,17 +1211,8 @@ pub(crate) async fn send_message_inner(
                 },
             )
             .await;
-            emit_browser_tab_cleanup(state, &app, &browser_turn_id).await;
             Err(client_turn_error(turn_started, &message))
         }
-    }
-}
-
-async fn emit_browser_tab_cleanup(state: &AppState, app: &AppHandle, turn_id: &str) {
-    if let browser_bridge::TabCleanupAction::Prompt(prompt) =
-        state.browser_bridge.complete_turn(turn_id).await
-    {
-        let _ = app.emit("browser-tab-cleanup", prompt);
     }
 }
 

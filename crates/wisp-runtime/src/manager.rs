@@ -9,16 +9,12 @@ use std::{
     ffi::OsString,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{mpsc, oneshot, watch};
 
 pub const LOCAL_CONTEXT_ID: &str = "local";
 pub const MAINLINE_RUNTIME_SCOPE: &str = "mainline";
-/// Total budget for one stop request, however many runtimes it covers. Stopping
-/// runs on agent tool calls, project switches, and app exit, so a worker that
-/// refuses to die must cost a bounded wait rather than the whole turn.
-const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -316,15 +312,6 @@ impl RuntimeSession {
             }
         }
     }
-
-    /// Wait for `Dead` until `deadline`, then report the last known state. The
-    /// caller keeps going either way: a driver still stuck in worker shutdown
-    /// must not hold up the conversation, the project switch, or app exit.
-    async fn wait_dead_until(&self, deadline: tokio::time::Instant) -> RuntimeInfo {
-        tokio::time::timeout_at(deadline, self.wait_dead())
-            .await
-            .unwrap_or_else(|_| self.info())
-    }
 }
 
 impl RuntimeManager {
@@ -423,26 +410,55 @@ impl RuntimeManager {
         infos
     }
 
-    /// Stop one runtime but keep its dead record, so the next call reports the
-    /// stop instead of silently starting a replacement.
     pub async fn stop(&self, key: &RuntimeKey) -> Option<RuntimeInfo> {
-        let session = { self.registry().sessions.get(key).cloned()? };
-        self.stop_sessions(&[(key.clone(), session)]).await.pop()
+        let session = self.registry().sessions.get(key).cloned()?;
+        session.request_stop();
+        Some(session.wait_dead().await)
     }
 
     pub async fn restart(&self, key: RuntimeKey, cwd: PathBuf) -> Result<RuntimeInfo> {
         let current = { self.registry().sessions.get(&key).cloned() };
         if let Some(session) = current {
-            let sessions = [(key.clone(), session)];
-            self.stop_sessions(&sessions).await;
-            self.forget_sessions(&sessions);
+            session.request_stop();
+            session.wait_dead().await;
+            let mut registry = self.registry();
+            if registry
+                .sessions
+                .get(&key)
+                .is_some_and(|current| Arc::ptr_eq(current, &session))
+            {
+                registry.sessions.remove(&key);
+            }
         }
         self.start(key, cwd).await
     }
 
     pub async fn stop_project(&self, project_id: &str) {
-        self.stop_and_forget(|key| key.project_id == project_id)
-            .await;
+        let sessions = {
+            let registry = self.registry();
+            registry
+                .sessions
+                .iter()
+                .filter(|(key, _)| key.project_id == project_id)
+                .map(|(key, session)| (key.clone(), session.clone()))
+                .collect::<Vec<_>>()
+        };
+        for (_, session) in &sessions {
+            session.request_stop();
+        }
+        for (_, session) in &sessions {
+            session.wait_dead().await;
+        }
+        let mut registry = self.registry();
+        for (key, session) in sessions {
+            if registry
+                .sessions
+                .get(&key)
+                .is_some_and(|current| Arc::ptr_eq(current, &session))
+            {
+                registry.sessions.remove(&key);
+            }
+        }
     }
 
     /// Stop every runtime owned by one conversation, e.g. when the session is
@@ -452,61 +468,75 @@ impl RuntimeManager {
         if session_id.is_empty() {
             return;
         }
-        self.stop_and_forget(|key| key.project_id == project_id && key.session_id == session_id)
-            .await;
-    }
-
-    pub async fn stop_scope(&self, project_id: &str, scope_key: &str) {
-        self.stop_and_forget(|key| key.project_id == project_id && key.scope_key == scope_key)
-            .await;
-    }
-
-    pub async fn shutdown_all(&self) {
-        self.stop_and_forget(|_| true).await;
-    }
-
-    async fn stop_and_forget(&self, matches: impl Fn(&RuntimeKey) -> bool) {
         let sessions = {
-            self.registry()
+            let registry = self.registry();
+            registry
                 .sessions
                 .iter()
-                .filter(|(key, _)| matches(key))
+                .filter(|(key, _)| key.project_id == project_id && key.session_id == session_id)
                 .map(|(key, session)| (key.clone(), session.clone()))
                 .collect::<Vec<_>>()
         };
-        self.stop_sessions(&sessions).await;
-        self.forget_sessions(&sessions);
-    }
-
-    /// Ask every session to stop and wait out one shared budget. Returning on
-    /// the deadline is what keeps a worker that refuses to exit from blocking
-    /// the agent turn, the project switch, or app exit.
-    async fn stop_sessions(
-        &self,
-        sessions: &[(RuntimeKey, Arc<RuntimeSession>)],
-    ) -> Vec<RuntimeInfo> {
-        for (_, session) in sessions {
+        for (_, session) in &sessions {
             session.request_stop();
         }
-        let deadline = tokio::time::Instant::now() + STOP_TIMEOUT;
-        let mut stopped = Vec::with_capacity(sessions.len());
-        for (_, session) in sessions {
-            stopped.push(session.wait_dead_until(deadline).await);
+        for (_, session) in &sessions {
+            session.wait_dead().await;
         }
-        stopped
-    }
-
-    fn forget_sessions(&self, sessions: &[(RuntimeKey, Arc<RuntimeSession>)]) {
         let mut registry = self.registry();
         for (key, session) in sessions {
             if registry
                 .sessions
-                .get(key)
-                .is_some_and(|current| Arc::ptr_eq(current, session))
+                .get(&key)
+                .is_some_and(|current| Arc::ptr_eq(current, &session))
             {
-                registry.sessions.remove(key);
+                registry.sessions.remove(&key);
             }
         }
+    }
+
+    pub async fn stop_scope(&self, project_id: &str, scope_key: &str) {
+        let sessions = {
+            let registry = self.registry();
+            registry
+                .sessions
+                .iter()
+                .filter(|(key, _)| key.project_id == project_id && key.scope_key == scope_key)
+                .map(|(key, session)| (key.clone(), session.clone()))
+                .collect::<Vec<_>>()
+        };
+        for (_, session) in &sessions {
+            session.request_stop();
+        }
+        for (_, session) in &sessions {
+            session.wait_dead().await;
+        }
+        let mut registry = self.registry();
+        for (key, session) in sessions {
+            if registry
+                .sessions
+                .get(&key)
+                .is_some_and(|current| Arc::ptr_eq(current, &session))
+            {
+                registry.sessions.remove(&key);
+            }
+        }
+    }
+
+    pub async fn shutdown_all(&self) {
+        let sessions = self
+            .registry()
+            .sessions
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for session in &sessions {
+            session.request_stop();
+        }
+        for session in sessions {
+            session.wait_dead().await;
+        }
+        self.registry().sessions.clear();
     }
 
     fn session(&self, key: RuntimeKey, cwd: PathBuf) -> Result<Arc<RuntimeSession>> {
@@ -602,16 +632,14 @@ impl RuntimeLauncher for LocalRuntimeLauncher {
                 (
                     python,
                     vec![self.python_worker.as_os_str().to_os_string()],
-                    self.envs.clone(),
+                    self.envs.as_slice(),
                     "python",
                 )
             }
             RuntimeLanguage::R => {
-                let rscript = find_rscript()
-                    .map(|path| crate::direct_rscript(&path))
-                    .ok_or_else(|| {
-                        anyhow!("Rscript not found on PATH; install R and add Rscript to PATH")
-                    })?;
+                let rscript = find_rscript().ok_or_else(|| {
+                    anyhow!("Rscript not found on PATH; install R and add Rscript to PATH")
+                })?;
                 let worker = self
                     .r_worker
                     .as_ref()
@@ -622,20 +650,19 @@ impl RuntimeLauncher for LocalRuntimeLauncher {
                         worker.display()
                     ));
                 }
-                let envs = crate::conda_prefix_envs(&rscript);
                 (
                     rscript,
                     vec![
                         OsString::from("--vanilla"),
                         worker.as_os_str().to_os_string(),
                     ],
-                    envs,
+                    &[][..],
                     "r",
                 )
             }
         };
         let client =
-            KernelClient::spawn_command(&interpreter, &args, &envs, Some(cwd), language).await?;
+            KernelClient::spawn_command(&interpreter, &args, envs, Some(cwd), language).await?;
         let ready = client.ready().clone();
         Ok(LaunchedRuntime::new(
             Box::new(client),
@@ -859,7 +886,6 @@ mod tests {
         active: Arc<AtomicUsize>,
         max_active: Arc<AtomicUsize>,
         exited: Arc<AtomicBool>,
-        stuck_shutdown: Arc<AtomicBool>,
         launch_cwds: Arc<Mutex<Vec<PathBuf>>>,
         launch_delay: Duration,
     }
@@ -877,7 +903,6 @@ mod tests {
                     active: self.active.clone(),
                     max_active: self.max_active.clone(),
                     exited: self.exited.clone(),
-                    stuck_shutdown: self.stuck_shutdown.clone(),
                 }),
                 RuntimeMetadata {
                     interpreter: Some("fake-python".into()),
@@ -894,7 +919,6 @@ mod tests {
         active: Arc<AtomicUsize>,
         max_active: Arc<AtomicUsize>,
         exited: Arc<AtomicBool>,
-        stuck_shutdown: Arc<AtomicBool>,
     }
 
     struct ActiveCall(Arc<AtomicUsize>);
@@ -960,11 +984,6 @@ mod tests {
         }
 
         async fn shutdown(&mut self) -> Result<()> {
-            if self.stuck_shutdown.load(Ordering::SeqCst) {
-                // A worker whose descendants keep the inherited stderr pipe
-                // open never reports that it finished shutting down (#941).
-                std::future::pending::<()>().await;
-            }
             self.shutdowns.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -1249,66 +1268,6 @@ mod tests {
         assert_eq!(finished(get).await.unwrap().stdout, "0");
         assert_eq!(launcher.launches.load(Ordering::SeqCst), 2);
         manager.shutdown_all().await;
-    }
-
-    /// Stopping runs inside agent tool calls, project switches, and app exit,
-    /// so it must complete on a budget even when the worker never does (#941).
-    #[tokio::test(start_paused = true)]
-    async fn stopping_a_stuck_worker_gives_up_on_the_budget() {
-        let launcher = FakeLauncher::default();
-        let manager = manager(&launcher);
-        let key = RuntimeKey::local_python("project-a");
-        let cwd = PathBuf::from("project-a");
-        manager.start(key.clone(), cwd.clone()).await.unwrap();
-        launcher.stuck_shutdown.store(true, Ordering::SeqCst);
-
-        let started = tokio::time::Instant::now();
-        let stopped = manager.stop(&key).await.unwrap();
-        assert!(started.elapsed() >= STOP_TIMEOUT);
-        assert_eq!(stopped.status, RuntimeStatus::Stopping);
-        assert_eq!(launcher.shutdowns.load(Ordering::SeqCst), 0);
-
-        // An explicit stop keeps its record, so the next call reports the stop
-        // instead of quietly starting a second interpreter.
-        assert!(manager.execute(&key, &cwd, "get").await.is_err());
-        assert_eq!(launcher.launches.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn restarting_past_a_stuck_worker_still_yields_a_fresh_runtime() {
-        let launcher = FakeLauncher::default();
-        let manager = manager(&launcher);
-        let key = RuntimeKey::local_python("project-a");
-        let cwd = PathBuf::from("project-a");
-        let first = manager.start(key.clone(), cwd.clone()).await.unwrap();
-        launcher.stuck_shutdown.store(true, Ordering::SeqCst);
-
-        let restarted = manager.restart(key.clone(), cwd.clone()).await.unwrap();
-        assert_eq!(restarted.generation, first.generation + 1);
-        assert_eq!(restarted.status, RuntimeStatus::Ready);
-        assert_eq!(manager.list().len(), 1);
-        assert_eq!(launcher.launches.load(Ordering::SeqCst), 2);
-    }
-
-    /// One stuck worker per project must not add up: app exit spends a single
-    /// budget for every runtime it stops.
-    #[tokio::test(start_paused = true)]
-    async fn app_exit_shares_one_budget_across_stuck_runtimes() {
-        let launcher = FakeLauncher::default();
-        let manager = manager(&launcher);
-        for project in ["project-a", "project-b", "project-c"] {
-            manager
-                .start(RuntimeKey::local_python(project), PathBuf::from(project))
-                .await
-                .unwrap();
-        }
-        launcher.stuck_shutdown.store(true, Ordering::SeqCst);
-
-        let started = tokio::time::Instant::now();
-        manager.shutdown_all().await;
-        assert!(started.elapsed() >= STOP_TIMEOUT);
-        assert!(started.elapsed() < STOP_TIMEOUT * 2);
-        assert!(manager.list().is_empty());
     }
 
     #[tokio::test]

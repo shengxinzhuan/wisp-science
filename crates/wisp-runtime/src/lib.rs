@@ -6,8 +6,8 @@ pub mod manager;
 pub mod tool;
 
 pub use env::{
-    bundled_mock_mcp_path, bundled_r_worker_path, bundled_worker_path, conda_prefix_envs,
-    direct_rscript, find_rscript, resolve_bundled_script, PythonEnv,
+    bundled_mock_mcp_path, bundled_r_worker_path, bundled_worker_path, find_rscript,
+    resolve_bundled_script, PythonEnv,
 };
 pub use kernel::{KernelClient, KernelReady, KernelResp, MAX_CODE_BYTES, PROTOCOL_VERSION};
 pub use manager::{

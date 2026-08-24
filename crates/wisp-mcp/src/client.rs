@@ -6,6 +6,7 @@
 //! `tools/call`. Each remote tool is exposed to the agent as a
 //! [`wisp_tools::Tool`] via [`McpTool`].
 
+use crate::process_tree::ProcessTree;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -16,7 +17,6 @@ use std::sync::{Arc, Mutex as StdMutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::ChildStdin;
 use tokio::sync::{oneshot, Mutex};
-use wisp_tools::process::ProcessTree;
 
 /// Hard cap on a single stdio JSON-RPC exchange, matching the HTTP transport's
 /// request timeout. Without it a hung server blocks the agent turn forever.

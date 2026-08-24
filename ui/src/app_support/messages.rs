@@ -194,7 +194,6 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
         "chat" => view! { <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/><path d="M8 10h8"/><path d="M8 14h5"/> }.into_view(),
         "branch" => view! { <path d="M6 3v6a4 4 0 0 0 4 4h8"/><path d="M18 7v12"/><path d="M14 15l4 4 4-4"/><circle cx="6" cy="3" r="2"/> }.into_view(),
         "flask" => view! { <path d="M10 2v7.3"/><path d="M14 9.3V2"/><path d="M8.5 2h7"/><path d="m10 9.3-6.5 10.8a1 1 0 0 0 .9 1.5h15.2a1 1 0 0 0 .9-1.5L14 9.3"/><path d="M6.5 16h11"/> }.into_view(),
-        "dna" => view! { <path d="M4 3c5 0 11 18 16 18"/><path d="M20 3C15 3 9 21 4 21"/><path d="M7 6h10"/><path d="M5 10h14"/><path d="M5 14h14"/><path d="M7 18h10"/> }.into_view(),
         "arrow-left" => view! { <path d="M19 12H5"/><path d="m12 19-7-7 7-7"/> }.into_view(),
         "folder-plus" => view! { <path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/> }.into_view(),
         "book" => view! { <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/> }.into_view(),
@@ -290,14 +289,16 @@ pub(crate) fn ImageGenerationCard(
     let preview_failed = create_rw_signal(false);
     if ok == Some(true) {
         let load_path = path.clone();
-        let loc = locale.get_untracked();
         spawn_local(async move {
-            match load_file_content(&load_path, loc, Some(32 * 1024 * 1024)).await {
-                Ok(file) => match file.base64 {
-                    Some(base64) => source.set(Some(format!("data:{};base64,{base64}", file.mime))),
-                    None => preview_failed.set(true),
-                },
-                Err(_) => preview_failed.set(true),
+            // Full-resolution blob object URL from the shared cache — a data
+            // URL here meant ~1.33x the file size as a string in the DOM.
+            match crate::bindings::media_url(&load_path).await.as_string() {
+                Some(url) => {
+                    let _ = source.try_set(Some(url));
+                }
+                None => {
+                    let _ = preview_failed.try_set(true);
+                }
             }
         });
     }
@@ -402,14 +403,17 @@ pub(crate) fn VideoGenerationCard(path: String, ok: Option<bool>, output: String
     let preview_failed = create_rw_signal(false);
     if ok == Some(true) {
         let load_path = path.clone();
-        let loc = locale.get_untracked();
         spawn_local(async move {
-            match load_file_content(&load_path, loc, Some(64 * 1024 * 1024)).await {
-                Ok(file) => match file.base64 {
-                    Some(base64) => source.set(Some(format!("data:{};base64,{base64}", file.mime))),
-                    None => preview_failed.set(true),
-                },
-                Err(_) => preview_failed.set(true),
+            // Blob object URL streamed by the browser's media stack. A 64 MB
+            // MP4 inlined as base64 was ~85 MB of string in the DOM — the
+            // worst offender of the renderer OOM reports.
+            match crate::bindings::media_url(&load_path).await.as_string() {
+                Some(url) => {
+                    let _ = source.try_set(Some(url));
+                }
+                None => {
+                    let _ = preview_failed.try_set(true);
+                }
             }
         });
     }
@@ -490,8 +494,9 @@ pub(crate) fn VideoGenerationCard(path: String, ok: Option<bool>, output: String
 }
 
 /// Small, lazy image preview shared by composer cards and sent messages. The
-/// source stays inside the WebView as a data URL and gracefully falls back to
-/// an image icon when a native path cannot be read from the active project.
+/// source is a cached, downscaled blob object URL (see `media_thumbnail_url`)
+/// and gracefully falls back to an image icon when a native path cannot be
+/// read from the active project.
 #[component]
 pub(crate) fn AttachmentThumbnail(path: String, alt: String) -> impl IntoView {
     let source = create_rw_signal(None::<String>);
@@ -499,16 +504,10 @@ pub(crate) fn AttachmentThumbnail(path: String, alt: String) -> impl IntoView {
     create_effect(move |_| {
         let path = path_for_effect.clone();
         spawn_local(async move {
-            let args = to_value(&tauri_args::read_file(&path, Some(16 * 1024 * 1024))).unwrap();
-            let Ok(value) = invoke_checked("read_file", args).await else {
-                return;
-            };
-            let Ok(file) = serde_wasm_bindgen::from_value::<FileContent>(value) else {
-                return;
-            };
-            if let Some(base64) = file.base64 {
-                source.set(Some(format!("data:{};base64,{base64}", file.mime)));
-            }
+            let url = crate::bindings::media_thumbnail_url(&path)
+                .await
+                .as_string();
+            let _ = source.try_set(url);
         });
     });
     view! {
@@ -527,28 +526,59 @@ pub(crate) fn AttachmentThumbnail(path: String, alt: String) -> impl IntoView {
 /// fail to decode) falls back to exactly the badge card these tiles replaced.
 #[component]
 fn ArtifactThumb(path: Option<String>, kind: &'static str) -> impl IntoView {
-    let locale = use_locale();
-    let source = create_rw_signal(None::<String>);
+    // A per-card unique id, so the async thumbnail fill below can address this
+    // exact mount. The generated-card list rebuilds whenever the shared
+    // artifact signal changes; a rebuild disposes the previous owner, and a
+    // signal write from the disposed task is silently dropped by design. DOM
+    // direct fill keeps the async result visible for as long as this node is
+    // in the document, independent of the reactive owner that started it.
+    let dom_id = unique_dom_id("art-thumb");
     if let Some(path) = path.filter(|_| kind == "image") {
-        // `load_file_content`, not `read_file`: artifact paths also come in the
-        // artifact:/version:/ssh:// spellings the previews accept.
-        let loc = locale.get_untracked();
+        // Thumbnail-sized card: the shared downscaled blob URL also accepts
+        // the artifact:/version:/ssh:// spellings `load_file_content` does.
+        let dom_id_for_load = dom_id.clone();
         spawn_local(async move {
-            if let Ok(file) = load_file_content(&path, loc, Some(32 * 1024 * 1024)).await {
-                if let Some(base64) = file.base64 {
-                    source.set(Some(format!("data:{};base64,{base64}", file.mime)));
+            let url = crate::bindings::media_thumbnail_url(&path)
+                .await
+                .as_string();
+            let Some(url) = url else { return };
+            let Some(el) = web_sys::window()
+                .and_then(|window| window.document())
+                .and_then(|document| document.get_element_by_id(&dom_id_for_load))
+            else {
+                return;
+            };
+            let Some(img) = append_thumb_image(&el) else {
+                return;
+            };
+            // A failed load (e.g. its blob URL was evicted meanwhile) removes
+            // the img so the kind badge stays the fallback.
+            let img_for_error = img.clone();
+            let handler = wasm_bindgen::closure::Closure::once(move || {
+                if let Some(parent) = img_for_error.parent_element() {
+                    let _ = parent.remove_child(&img_for_error).ok();
                 }
-            }
+            });
+            let _ = img.add_event_listener_with_callback("error", handler.as_ref().unchecked_ref());
+            let _ = img.set_attribute("src", &url);
         });
     }
     view! {
-        <span class="message-artifact-thumb">
+        <span class="message-artifact-thumb" id=dom_id.clone()>
             <span class=format!("rp-badge {kind}")>{kind}</span>
-            {move || source.get().map(|src| view! {
-                <img src=src alt="" on:error=move |_| source.set(None) />
-            })}
         </span>
     }
+}
+
+/// The `<img>` for a filled thumbnail is created lazily inside the thumb span,
+/// after the badge, so an image whose bytes never arrive (or fail to decode)
+/// falls back to exactly the badge card these tiles replaced.
+fn append_thumb_image(parent: &web_sys::Element) -> Option<web_sys::Element> {
+    let img = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.create_element("img").ok())?;
+    parent.append_child(&img).ok()?;
+    Some(img)
 }
 
 /// Queue (#433): an operation on a parked follow-up, raised from its bubble and
@@ -852,7 +882,7 @@ pub(crate) fn AssistantMessage(
     model: Option<String>,
     timestamp: Option<i64>,
     resources: Vec<MessageResource>,
-    artifacts: Vec<Artifact>,
+    artifacts: Memo<Vec<Artifact>>,
     source_item: usize,
     on_artifact: Callback<usize>,
     on_file: Callback<ModalArtifact>,
@@ -870,19 +900,26 @@ pub(crate) fn AssistantMessage(
     on_explore: Callback<usize>,
 ) -> impl IntoView {
     let locale = use_locale();
-    let arts_for_html = artifacts.clone();
     let resources_for_html = resources.clone();
     let text_for_html = text.clone();
     let project = use_context::<ReadSignal<Option<ProjectInfo>>>();
     let html = create_memo(move |_| {
         let project_root = project.and_then(|project| project.get().map(|project| project.root));
-        enrich_md_html(
-            md_to_html(&text_for_html),
-            &arts_for_html,
-            &resources_for_html,
-            locale.get(),
-            project_root.as_deref(),
-        )
+        // Subscribe to the shared artifact list at row scope: an artifact
+        // change recomputes only this memo, and String equality keeps the DOM
+        // (plus the highlight/resource effects below) untouched for rows whose
+        // enriched HTML did not actually change. This replaces the global
+        // fingerprint that used to remount every assistant row on any artifact
+        // event — the remount storm behind the dead-window reports.
+        artifacts.with(|arts| {
+            enrich_md_html(
+                md_to_html(&text_for_html),
+                arts,
+                &resources_for_html,
+                locale.get(),
+                project_root.as_deref(),
+            )
+        })
     });
     let hid = unique_dom_id("md");
     let hid_for_effect = hid.clone();
@@ -904,18 +941,11 @@ pub(crate) fn AssistantMessage(
                 let Some(version_id) = resource.artifact_version_id else {
                     continue;
                 };
-                let Ok(value) = invoke_checked(
-                    "read_artifact_version",
-                    to_value(&serde_json::json!({ "versionId": version_id })).unwrap(),
-                )
-                .await
-                else {
-                    continue;
-                };
-                let Ok(file) = serde_wasm_bindgen::from_value::<FileContent>(value) else {
-                    continue;
-                };
-                let Some(base64) = file.base64 else {
+                // Cached blob object URL keyed by the immutable version path —
+                // repeated mounts of the same image reuse one blob instead of
+                // re-fetching and re-inlining its base64.
+                let path = format!("artifact-version:{version_id}");
+                let Some(url) = crate::bindings::media_url(&path).await.as_string() else {
                     continue;
                 };
                 let selector = format!(r#"#{dom_id} [data-resource-id="{}"]"#, resource.id);
@@ -923,55 +953,63 @@ pub(crate) fn AssistantMessage(
                     .and_then(|window| window.document())
                     .and_then(|document| document.query_selector(&selector).ok().flatten())
                 {
-                    let _ = element
-                        .set_attribute("src", &format!("data:{};base64,{base64}", file.mime));
+                    let _ = element.set_attribute("src", &url);
                     let _ = element.set_attribute("class", "resource-inline-image");
                 }
             }
         });
     });
     let on_artifact = on_artifact.clone();
+    let on_artifact_for_cards = on_artifact.clone();
     let on_file = on_file.clone();
-    let arts_for_click = artifacts.clone();
     let resources_for_click = resources.clone();
-    let generated = artifacts
-        .iter()
-        .enumerate()
-        .filter(|(_, artifact)| artifact.source_item == source_item)
-        .map(|(index, artifact)| {
-            let path = match &artifact.data {
-                PreviewData::File { path, .. } => Some(path.clone()),
-                _ => None,
-            };
-            (
-                index,
-                artifact.name.clone(),
-                artifact.kind,
-                artifact.superseded,
-                path,
-            )
+    let generated = create_memo(move |_| {
+        artifacts.with(|arts| {
+            arts.iter()
+                .enumerate()
+                .filter(|(_, artifact)| artifact.source_item == source_item)
+                .map(|(index, artifact)| {
+                    let path = match &artifact.data {
+                        PreviewData::File { path, .. } => Some(path.clone()),
+                        _ => None,
+                    };
+                    (
+                        index,
+                        artifact.name.clone(),
+                        artifact.kind,
+                        artifact.superseded,
+                        path,
+                    )
+                })
+                .collect::<Vec<_>>()
         })
-        .collect::<Vec<_>>();
-    let generated_count = generated.len();
+    });
+    let generated_count = move || generated.with(Vec::len);
     // Anything past this is folded behind "+N more". Kept in step with the
     // `nth-child(n+9)` rule in chat.css that does the hiding.
-    let generated_overflow = generated_count.saturating_sub(8);
+    let generated_overflow = move || generated_count().saturating_sub(8);
     let generated_expanded = create_rw_signal(false);
-    let generated_collapsed = move || generated_overflow > 0 && !generated_expanded.get();
-    let generated_cards = generated.into_iter().map(|(index, name, kind, superseded, path)| {
-        let on_artifact = on_artifact.clone();
-        view! {
-            <button type="button" class="message-artifact-card" class:superseded=superseded
-                disabled=superseded
-                data-artifact-name=name.clone()
-                title=name.clone()
-                on:click=move |_| on_artifact.call(index)>
-                <ArtifactThumb path=path kind=kind />
-                <span class="message-artifact-name">{name}</span>
-                {superseded.then(|| view! { <span class="message-artifact-status">{move || t(locale.get(), "artifact.updated")}</span> })}
-            </button>
-        }
-    }).collect_view();
+    let generated_collapsed = move || generated_overflow() > 0 && !generated_expanded.get();
+    let generated_cards = move || {
+        generated
+            .get()
+            .into_iter()
+            .map(|(index, name, kind, superseded, path)| {
+                let on_artifact = on_artifact_for_cards.clone();
+                view! {
+                    <button type="button" class="message-artifact-card" class:superseded=superseded
+                        disabled=superseded
+                        data-artifact-name=name.clone()
+                        title=name.clone()
+                        on:click=move |_| on_artifact.call(index)>
+                        <ArtifactThumb path=path kind=kind />
+                        <span class="message-artifact-name">{name}</span>
+                        {superseded.then(|| view! { <span class="message-artifact-status">{move || t(locale.get(), "artifact.updated")}</span> })}
+                    </button>
+                }
+            })
+            .collect_view()
+    };
     let text_for_disabled = text.clone();
     let text_for_click_copy = text;
     view! {
@@ -1001,24 +1039,25 @@ pub(crate) fn AssistantMessage(
             <div class="body md" id=hid.clone()
                 inner_html=move || html.get()
                 on:click=move |ev: web_sys::MouseEvent| {
+                    let arts = artifacts.get_untracked();
                     handle_md_click(
                         &ev,
-                        &arts_for_click,
+                        &arts,
                         &resources_for_click,
                         &on_artifact,
                         &on_file,
                     )
                 }></div>
-            {(generated_count > 0).then(|| view! {
+            {move || (generated_count() > 0).then(|| view! {
                 <div class="message-artifacts">
-                    <div class="message-artifacts-label">{format!("Generated · {generated_count}")}</div>
+                    <div class="message-artifacts-label">{move || format!("Generated · {}", generated_count())}</div>
                     <div class="message-artifact-cards"
                         class:collapsed=generated_collapsed>
                         {generated_cards}
                         {move || generated_collapsed().then(|| view! {
                             <button type="button" class="message-artifact-more"
                                 on:click=move |_| generated_expanded.set(true)>
-                                {tf(locale.get(), "artifact.more_count", &[("n", &generated_overflow.to_string())])}
+                                {move || tf(locale.get(), "artifact.more_count", &[("n", &generated_overflow().to_string())])}
                             </button>
                         })}
                     </div>

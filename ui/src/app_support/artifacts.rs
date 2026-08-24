@@ -546,18 +546,6 @@ mod promote_assistant_text_tests {
     }
 }
 
-/// Identity hash of the artifact list as seen by assistant markdown (chip
-/// index, id, and label). Mixed into assistant row keys so chips re-render
-/// when the artifact list changes, and nothing re-renders when it doesn't.
-pub(crate) fn artifacts_fingerprint(arts: &[Artifact]) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    for a in arts {
-        (&a.id, &a.name).hash(&mut h);
-    }
-    h.finish()
-}
-
 pub(crate) type ProtoCache = HashMap<(usize, u64), Rc<Vec<ProtoArtifact>>>;
 
 /// Collect tables, data blocks, equations, and file-path artifacts from the transcript.

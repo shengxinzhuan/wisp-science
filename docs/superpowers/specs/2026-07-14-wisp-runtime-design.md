@@ -229,10 +229,6 @@ Lifecycle rules:
   explicitly.
 - Stop/restart is destructive to in-memory state and must be represented as such in
   the UI.
-- A stop owns the worker's whole process tree, not just the direct child. An
-  interpreter is often a launcher — Windows `Rscript.exe` re-launches
-  `bin\x64\Rscript.exe` through `cmd.exe` — so the real interpreter and anything a
-  cell started in the background go away with it.
 
 Unlike the current `KernelClient`, the manager must retain the child handle rather
 than intentionally forgetting it. Process cleanup and status detection require an
@@ -400,19 +396,6 @@ Interpreter selection is user/context configuration, not executable code input.
 Project-specific pixi, conda, virtualenv, or `renv` profiles are future environment
 selection work. A v1 user may explicitly configure the interpreter from such an
 environment.
-
-An explicitly configured interpreter must actually be launchable. When it lives
-inside a conda-style prefix — a directory containing `conda-meta`, which conda,
-mamba, and pixi all write — the worker is launched with that prefix on its own
-`PATH`. On Windows an interpreter's shared libraries live in the prefix rather than
-beside the executable, so without this a conda-forge `Rscript.exe` exits with
-`STATUS_DLL_NOT_FOUND`, or faults on a mismatched library found elsewhere on `PATH`.
-This is the launched child's environment only; the host environment is never
-modified, and remote contexts keep whatever their own shell provides.
-
-On Windows, `<R>\bin\Rscript.exe` is an architecture shim that re-launches
-`<R>\bin\x64\Rscript.exe` through `cmd.exe`. Local launches resolve to the real
-binary so the interpreter is the app's direct child.
 
 ## 11. Worker protocol
 
@@ -662,11 +645,7 @@ artifacts, not hidden runtime checkpoints.
   silently claiming old state survived. Lazy start applies to missing runtimes, not
   dead generations.
 - SSH disconnect is terminal in v1.
-- Stopping a runtime closes stdin so the worker can exit on its own, then kills it,
-  then terminates its whole process tree. Every step has a deadline, and the total
-  budget for one stop request is shared across the runtimes it covers: a worker that
-  refuses to exit must never block an Agent turn, a project switch, or app exit.
-  Stopping therefore also reclaims a background process a cell left running.
+- Application shutdown closes stdin, waits briefly, then kills attached processes.
 - Arbitrary Python/R execution continues to use the existing approval system.
 - Code travels over inherited local/WSL/SSH stdio, not an unauthenticated listening
   port.

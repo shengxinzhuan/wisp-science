@@ -1461,7 +1461,7 @@ pub(crate) fn render_item(
     ui_index: usize,
     item: &ChatItem,
     timestamp: Option<i64>,
-    artifacts: &[Artifact],
+    artifacts: Memo<Vec<Artifact>>,
     on_artifact: Callback<usize>,
     on_file: Callback<ModalArtifact>,
     runs: RwSignal<Vec<RunSummary>>,
@@ -1566,7 +1566,7 @@ pub(crate) fn render_item(
                 model=model.clone()
                 timestamp=timestamp
                 resources=resources.clone()
-                artifacts=artifacts.to_vec()
+                artifacts=artifacts
                 source_item=ui_index
                 on_artifact=on_artifact
                 on_file=on_file

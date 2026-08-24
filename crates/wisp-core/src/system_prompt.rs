@@ -127,7 +127,6 @@ If a named workflow is disabled or unavailable, follow the same principles direc
             "## Skills Selection Guidelines\n\n\
 {count} {availability} currently configured, enabled, and searchable for this project/session. Their catalog and bodies are not preloaded.\n\n\
 - When a task may match an installed workflow, call `search_skills` with concise task or domain keywords.\n\
-- Preserve important terms from the user's original language. If the first search has no confident match, retry once with common English domain synonyms, or with the user's language when the first query was English.\n\
 - When a task needs a specific model ability (e.g. image understanding), call `search_models` with a capability keyword like `vision` to find a suitable model, then pass its id to `create_workflow` via `params.model_id`.\n\
 - When the user asks how many Skills are configured, enabled, effective, shadowed, or broken, use `list_skill_catalog` and read its explicitly named count fields.\n\
 - Treat `current_configured_enabled_count` as authoritative for this Agent snapshot. If the user cites a different UI or remembered count, report the discrepancy; do not accept, relabel, or explain the user's number without supporting inventory data.\n\
@@ -568,10 +567,6 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("`search_skills`"), "{out}");
-        assert!(
-            out.contains("retry once with common English domain synonyms"),
-            "{out}"
-        );
         assert!(out.contains("do not accept, relabel, or explain"), "{out}");
         assert!(!out.contains("secret-skill"), "{out}");
         assert!(!out.contains("SHOULD_NOT_BE_IN_SYSTEM_PROMPT"), "{out}");

@@ -672,22 +672,18 @@ pub(super) async fn ensure_remote_started(
             }
             match launch_remote(runner, &remote.handle).await {
                 Ok(handle) => Ok(handle),
-                Err(launch_error) => {
-                    // The launch RPC can fail after the remote supervisor has
-                    // already acknowledged the command: the Windows launch
-                    // host can time out on its detached supervisor, and an
-                    // SSH response can be lost to a transport timeout or
-                    // disconnect after `_submitted` was written. Re-read the
-                    // idempotent control directory before declaring the Run
-                    // failed; this observes an existing handle but never
-                    // starts the command a second time. A genuine remote
-                    // script failure leaves no `_submitted`, so the original
-                    // launch error still surfaces.
+                Err(launch_error) if remote.handle.is_local_detached() => {
+                    // The Windows launch host can time out after its detached
+                    // supervisor has already acknowledged the command. Re-read
+                    // the idempotent control directory before declaring the Run
+                    // failed; this observes an existing handle but never starts
+                    // the command a second time.
                     match prepare_remote(runner, remote).await {
                         Ok(PrepareRemote::Existing(handle)) => Ok(handle),
                         _ => Err(launch_error),
                     }
                 }
+                Err(error) => Err(error),
             }
         }
     }

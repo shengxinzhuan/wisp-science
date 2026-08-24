@@ -12,7 +12,6 @@ reqwest = { workspace = true }
 futures-util = { workspace = true }
 tokio = { workspace = true }
 async-trait = "0.1"
-thiserror = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]

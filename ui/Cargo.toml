@@ -1,7 +1,7 @@
 [package]
 name = "wisp-ui"
 description = "wisp-science desktop UI (Leptos CSR, built by Trunk, loaded in the Tauri WebView2)."
-version = "1.6.0"
+version = "1.6.1"
 edition = "2021"
 license = "AGPL-3.0-only"
 
@@ -26,3 +26,12 @@ futures-channel = "0.3"
 # Standalone workspace: this crate compiles to wasm32 for the Tauri WebView,
 # separate from the native Cargo workspace at the repo root.
 [workspace]
+
+# Frontend wasm build profile: the UI runs inside a WebView where a single
+# recovered panic costs a console warning, but an aborted WASM instance costs
+# the whole renderer ("dead window, backend still running"). Unwinding keeps
+# the OwnerDisposed downgrade in `install_panic_hook` effective in release
+# builds; everything else inherits the release settings.
+[profile.release-wasm]
+inherits = "release"
+panic = "unwind"

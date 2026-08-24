@@ -908,7 +908,6 @@ pub(super) fn SettingsView(
     let browser_prefer_host = create_rw_signal(String::new());
     let browser_prefer_reason = create_rw_signal(String::new());
     let browser_auto_launch = create_rw_signal(true);
-    let browser_auto_close_tabs = create_rw_signal(false);
     create_effect(move |_| {
         if show_settings.get() && settings_section.get() == "browser" {
             spawn_local(async move {
@@ -925,13 +924,6 @@ pub(super) fn SettingsView(
                 {
                     if let Ok(enabled) = serde_wasm_bindgen::from_value::<bool>(value) {
                         browser_auto_launch.set(enabled);
-                    }
-                }
-                if let Ok(value) =
-                    invoke_checked("get_browser_auto_close_tabs", JsValue::UNDEFINED).await
-                {
-                    if let Ok(enabled) = serde_wasm_bindgen::from_value::<bool>(value) {
-                        browser_auto_close_tabs.set(enabled);
                     }
                 }
             });
@@ -966,21 +958,6 @@ pub(super) fn SettingsView(
                 Ok(_) => browser_filters_msg.set(Some((
                     true,
                     t(locale.get_untracked(), "browser.auto_launch_saved").into(),
-                ))),
-                Err(err) => browser_filters_msg.set(Some((false, js_error_text(err)))),
-            }
-            browser_filters_busy.set(false);
-        });
-    });
-    let save_browser_auto_close_tabs = Callback::new(move |enabled: bool| {
-        browser_auto_close_tabs.set(enabled);
-        browser_filters_busy.set(true);
-        spawn_local(async move {
-            let arg = to_value(&serde_json::json!({ "enabled": enabled })).unwrap();
-            match invoke_checked("set_browser_auto_close_tabs", arg).await {
-                Ok(_) => browser_filters_msg.set(Some((
-                    true,
-                    t(locale.get_untracked(), "browser.auto_close_tabs_saved").into(),
                 ))),
                 Err(err) => browser_filters_msg.set(Some((false, js_error_text(err)))),
             }
@@ -5045,18 +5022,6 @@ pub(super) fn SettingsView(
                                 <input type="checkbox" data-testid="browser-auto-launch"
                                     prop:checked=move || browser_auto_launch.get()
                                     on:change=move |ev| save_browser_auto_launch.call(event_target_checked(&ev)) />
-                                <span class="toggle-track" aria-hidden="true"></span>
-                            </label>
-                        </div>
-                        <div class="appearance-config-row">
-                            <div>
-                                <strong>{move || t(locale.get(), "browser.auto_close_tabs")}</strong>
-                                <span>{move || t(locale.get(), "browser.auto_close_tabs_hint")}</span>
-                            </div>
-                            <label class="toggle">
-                                <input type="checkbox" data-testid="browser-auto-close-tabs"
-                                    prop:checked=move || browser_auto_close_tabs.get()
-                                    on:change=move |ev| save_browser_auto_close_tabs.call(event_target_checked(&ev)) />
                                 <span class="toggle-track" aria-hidden="true"></span>
                             </label>
                         </div>

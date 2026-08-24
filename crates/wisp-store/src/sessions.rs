@@ -810,20 +810,52 @@ impl Store {
     }
 
     pub async fn append_message(&self, frame_id: &str, seq: i64, msg: &Message) -> Result<()> {
-        insert_message_row(&self.pool, frame_id, seq, msg).await
+        let id = uuid::Uuid::new_v4().to_string();
+        let role = if msg.role == wisp_llm::Role::User
+            && msg.tool_name.as_deref() == Some(super::AGENT_WORKFLOW_COMPLETION_TOOL)
+        {
+            "internal".into()
+        } else {
+            format!("{:?}", msg.role).to_ascii_lowercase()
+        };
+        let content = serde_json::to_string(&msg.content)?;
+        let tool_calls = if msg.tool_calls.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&msg.tool_calls)?)
+        };
+        sqlx::query("INSERT INTO messages(id,frame_id,seq,role,content,tool_calls,tool_call_id,tool_name,reasoning,ts,model_name) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+            .bind(id).bind(frame_id).bind(seq).bind(role).bind(content)
+            .bind(tool_calls)
+            .bind(msg.tool_call_id.as_deref())
+            .bind(msg.tool_name.as_deref())
+            .bind(msg.reasoning.as_deref())
+            .bind(msg.ts)
+            .bind(msg.model_name.as_deref())
+            .execute(&self.pool).await?;
+        Ok(())
     }
 
-    /// Replace a frame's model context wholesale (user-triggered /compact and
-    /// automatic compaction). Only the `messages` rows are rewritten — the
-    /// session_ui_events visual transcript keeps the full history on purpose.
-    /// Resource links and turn undo anchor to message seqs, which a rewrite
-    /// invalidates, so they are dropped too. Deletes and inserts share one
-    /// write transaction: an interruption mid-replace leaves the previous
-    /// transcript fully intact instead of an emptied or half-written frame.
+    /// Replace a frame's model context wholesale (user-triggered /compact).
+    /// Only the `messages` rows are rewritten — the session_ui_events visual
+    /// transcript keeps the full history on purpose. Resource links anchor to
+    /// message seqs, which a rewrite invalidates, so they are dropped too.
     pub async fn replace_messages(&self, frame_id: &str, msgs: &[Message]) -> Result<()> {
-        let mut tx = self.begin_write().await?;
-        replace_message_rows(&mut tx, frame_id, msgs).await?;
-        tx.commit().await?;
+        sqlx::query("DELETE FROM message_resource_links WHERE frame_id=?")
+            .bind(frame_id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM turn_file_undo WHERE frame_id=?")
+            .bind(frame_id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM messages WHERE frame_id=?")
+            .bind(frame_id)
+            .execute(&self.pool)
+            .await?;
+        for (i, msg) in msgs.iter().enumerate() {
+            self.append_message(frame_id, (i + 1) as i64, msg).await?;
+        }
         Ok(())
     }
 
@@ -900,73 +932,6 @@ impl Store {
     ) -> Result<()> {
         truncate_message_rows(tx, frame_id, keep).await
     }
-
-    #[cfg(test)]
-    pub(crate) async fn replace_message_rows_for_test(
-        tx: &mut Transaction<'_, Sqlite>,
-        frame_id: &str,
-        msgs: &[Message],
-    ) -> Result<()> {
-        replace_message_rows(tx, frame_id, msgs).await
-    }
-}
-
-async fn insert_message_row<'e, E>(
-    executor: E,
-    frame_id: &str,
-    seq: i64,
-    msg: &Message,
-) -> Result<()>
-where
-    E: sqlx::Executor<'e, Database = Sqlite>,
-{
-    let id = uuid::Uuid::new_v4().to_string();
-    let role = if msg.role == wisp_llm::Role::User
-        && msg.tool_name.as_deref() == Some(super::AGENT_WORKFLOW_COMPLETION_TOOL)
-    {
-        "internal".into()
-    } else {
-        format!("{:?}", msg.role).to_ascii_lowercase()
-    };
-    let content = serde_json::to_string(&msg.content)?;
-    let tool_calls = if msg.tool_calls.is_empty() {
-        None
-    } else {
-        Some(serde_json::to_string(&msg.tool_calls)?)
-    };
-    sqlx::query("INSERT INTO messages(id,frame_id,seq,role,content,tool_calls,tool_call_id,tool_name,reasoning,ts,model_name) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
-        .bind(id).bind(frame_id).bind(seq).bind(role).bind(content)
-        .bind(tool_calls)
-        .bind(msg.tool_call_id.as_deref())
-        .bind(msg.tool_name.as_deref())
-        .bind(msg.reasoning.as_deref())
-        .bind(msg.ts)
-        .bind(msg.model_name.as_deref())
-        .execute(executor).await?;
-    Ok(())
-}
-
-async fn replace_message_rows(
-    tx: &mut Transaction<'_, Sqlite>,
-    frame_id: &str,
-    msgs: &[Message],
-) -> Result<()> {
-    sqlx::query("DELETE FROM message_resource_links WHERE frame_id=?")
-        .bind(frame_id)
-        .execute(&mut **tx)
-        .await?;
-    sqlx::query("DELETE FROM turn_file_undo WHERE frame_id=?")
-        .bind(frame_id)
-        .execute(&mut **tx)
-        .await?;
-    sqlx::query("DELETE FROM messages WHERE frame_id=?")
-        .bind(frame_id)
-        .execute(&mut **tx)
-        .await?;
-    for (i, msg) in msgs.iter().enumerate() {
-        insert_message_row(&mut **tx, frame_id, (i + 1) as i64, msg).await?;
-    }
-    Ok(())
 }
 
 /// Reconcile branch provenance before removing a mainline suffix.

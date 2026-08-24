@@ -15,6 +15,7 @@
 //! ```
 
 pub mod client;
+mod process_tree;
 pub mod tool;
 
 pub use client::{bundled_bio_tools_dir, McpCallResult, McpClient, RemoteTool};

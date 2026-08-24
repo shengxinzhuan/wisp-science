@@ -1038,9 +1038,6 @@ async fn ssh_launch_failure_stops_after_the_first_attempt() {
         ok_output("__WISP_PREPARED__\n"),
         ok_output(""),
         Err("temporary SSH disconnect".into()),
-        // Post-failure reattach probe: nothing was submitted remotely, so the
-        // original launch error must surface and the Run must fail.
-        ok_output("__WISP_PREPARED__\n"),
     ]));
     runner
         .synthesize_launch_ack
@@ -1089,16 +1086,7 @@ async fn ssh_launch_failure_stops_after_the_first_attempt() {
             .iter()
             .filter(|command| command.script == "launch SSH Run")
             .count(),
-        1,
-        "the reattach probe must never resend the launch"
-    );
-    assert_eq!(
-        commands
-            .iter()
-            .filter(|command| command.script == "prepare SSH Run")
-            .count(),
-        2,
-        "one prepare before launch, one reattach probe after the failure"
+        1
     );
     let _ = std::fs::remove_dir_all(&tmp);
 }
@@ -1158,65 +1146,6 @@ async fn local_launch_timeout_reattaches_when_supervisor_acknowledged() {
     let commands = runner.commands.lock().unwrap();
     assert_eq!(commands.len(), 3);
     assert!(commands[2].script.starts_with("prepare local Run"));
-    let _ = std::fs::remove_dir_all(&tmp);
-}
-
-#[tokio::test]
-async fn ssh_launch_timeout_reattaches_when_supervisor_acknowledged() {
-    let tmp =
-        std::env::temp_dir().join(format!("wisp_ssh_launch_reattach_{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
-        .await
-        .unwrap();
-    store
-        .create_project("p", "proj", &tmp.to_string_lossy())
-        .await
-        .unwrap();
-
-    let handle = test_handle("ssh-run", false);
-    let mut run = wisp_store::RunRecord::new("ssh-run", "p", "ssh:gpu", "Remote", "ssh_direct");
-    run.command = Some("long-analysis".into());
-    run.timeout_secs = Some(60);
-    run.remote_handle_json = Some(serde_json::to_string(&handle).unwrap());
-    store.create_run(&run).await.unwrap();
-    assert!(store
-        .activate_run_lifecycle("ssh-run", wisp_store::RunStatus::Submitted, "owner", 360)
-        .await
-        .unwrap());
-
-    // The remote supervisor wrote `_submitted`, but the launch RPC response
-    // was lost to a transport timeout. The reattach probe must observe the
-    // existing handle instead of failing the Run.
-    let runner = ScriptedRunRunner::new(vec![
-        ok_output("__WISP_PREPARED__\n"),
-        Err("launch SSH Run timed out after 20s".into()),
-        ok_output("__WISP_HANDLE__:test-token:4242:999\n"),
-    ]);
-    let mut remote = RemoteRun {
-        run_id: "ssh-run".into(),
-        project_id: "p".into(),
-        frame_id: None,
-        command: "long-analysis".into(),
-        timeout: Duration::from_secs(60),
-        input_refs: Vec::new(),
-        output_specs: Vec::new(),
-        harvest_root: Some(tmp.clone()),
-        handle,
-    };
-
-    let confirmed = ensure_remote_started(&store, "owner", &runner, &mut remote)
-        .await
-        .unwrap();
-
-    assert!(confirmed.is_confirmed());
-    let commands = runner.commands.lock().unwrap();
-    assert_eq!(commands.len(), 3);
-    assert_eq!(commands[1].script, "launch SSH Run");
-    assert_eq!(
-        commands[2].script, "prepare SSH Run",
-        "the probe re-reads the control directory and never relaunches"
-    );
     let _ = std::fs::remove_dir_all(&tmp);
 }
 

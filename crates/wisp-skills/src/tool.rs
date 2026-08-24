@@ -11,51 +11,6 @@ const DEFAULT_SEARCH_LIMIT: usize = 5;
 const MAX_SEARCH_LIMIT: usize = 10;
 const MAX_DESCRIPTION_CHARS: usize = 512;
 
-fn is_cjk(ch: char) -> bool {
-    matches!(
-        ch as u32,
-        0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF
-    )
-}
-
-fn normalize_search_text(value: &str) -> String {
-    value
-        .chars()
-        .flat_map(char::to_lowercase)
-        .map(|ch| {
-            if ch.is_alphanumeric() || is_cjk(ch) {
-                ch
-            } else {
-                ' '
-            }
-        })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn search_terms(value: &str) -> Vec<String> {
-    let normalized = normalize_search_text(value);
-    let mut terms = normalized
-        .split_whitespace()
-        .filter(|term| term.chars().count() >= 2)
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    let cjk = normalized
-        .chars()
-        .filter(|ch| is_cjk(*ch))
-        .collect::<Vec<_>>();
-    for size in [2, 3, 4] {
-        for window in cjk.windows(size) {
-            terms.push(window.iter().collect());
-        }
-    }
-    terms.sort();
-    terms.dedup();
-    terms
-}
-
 pub struct SearchSkillsTool {
     skills: Arc<SkillIndex>,
 }
@@ -125,25 +80,22 @@ impl SearchSkillsTool {
             .map(|limit| limit as usize)
             .unwrap_or(DEFAULT_SEARCH_LIMIT)
             .clamp(1, MAX_SEARCH_LIMIT);
+        let query = query.to_lowercase();
         let browse = query == "*";
-        let normalized_query = normalize_search_text(query);
-        let terms = search_terms(query);
+        let terms: Vec<_> = query.split_whitespace().collect();
         let mut matches = vec![];
         for skill in self.skills.all() {
-            let name = normalize_search_text(&skill.name);
-            let description = normalize_search_text(&skill.description);
-            let tags = normalize_search_text(&skill.tags.join(" "));
+            let name = skill.name.to_lowercase();
+            let description = skill.description.to_lowercase();
+            let tags = skill.tags.join(" ").to_lowercase();
             let mut score = usize::from(browse);
-            if name == normalized_query {
+            if name == query {
                 score += 1_000;
-            } else if !normalized_query.is_empty() && name.contains(&normalized_query) {
+            } else if name.contains(&query) {
                 score += 100;
             }
-            if !normalized_query.is_empty() && description.contains(&normalized_query) {
+            if description.contains(&query) || tags.contains(&query) {
                 score += 50;
-            }
-            if !normalized_query.is_empty() && tags.contains(&normalized_query) {
-                score += 60;
             }
             for term in &terms {
                 if name.contains(term) {
@@ -459,54 +411,6 @@ mod tests {
         let output: serde_json::Value = serde_json::from_str(&result.content).unwrap();
         assert_eq!(output["results"][0]["name"], "pubmed-review");
         assert_eq!(output["results"][0]["tags"][0], "systematic-evidence");
-
-        std::fs::remove_dir_all(root).ok();
-    }
-
-    #[test]
-    fn search_normalizes_separators_and_continuous_cjk_queries() {
-        assert_eq!(normalize_search_text("Single-Cell_QC"), "single cell qc");
-        let terms = search_terms("请检查论文图片是否重复");
-        assert!(terms.contains(&"图片".to_string()));
-        assert!(terms.contains(&"重复".to_string()));
-
-        let root = std::env::temp_dir().join(format!(
-            "wisp-skill-multilingual-search-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        for (name, description) in [
-            (
-                "singlecell-qc",
-                "Design single cell RNA sequencing quality control.",
-            ),
-            ("figure-duplicate-audit", "审核论文图片重复和图片查重。"),
-            ("literature-review", "Retrieve and synthesize papers."),
-        ] {
-            let dir = root.join(name);
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(
-                dir.join("SKILL.md"),
-                format!("---\nname: {name}\ndescription: {description}\n---\nbody"),
-            )
-            .unwrap();
-        }
-        let search = SearchSkillsTool::new(Arc::new(SkillIndex::load(&[root.clone()])));
-
-        let result = search.search(&json!({ "query": "single-cell_QC" }));
-        let output: serde_json::Value = serde_json::from_str(&result.content).unwrap();
-        assert_eq!(output["results"][0]["name"], "singlecell-qc");
-
-        let result = search.search(&json!({ "query": "singlecell" }));
-        let output: serde_json::Value = serde_json::from_str(&result.content).unwrap();
-        assert_eq!(output["results"][0]["name"], "singlecell-qc");
-
-        let result = search.search(&json!({ "query": "请检查论文图片是否重复" }));
-        let output: serde_json::Value = serde_json::from_str(&result.content).unwrap();
-        assert_eq!(output["results"][0]["name"], "figure-duplicate-audit");
 
         std::fs::remove_dir_all(root).ok();
     }

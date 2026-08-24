@@ -21,14 +21,24 @@ pub(crate) fn show_copy_toast() {
 }
 
 pub(crate) fn show_toast(message: &str) {
-    show_toast_with_class(message, "copy-toast");
+    show_toast_for(message, "copy-toast", 1_600);
 }
 
 pub(crate) fn show_warning_toast(message: &str) {
-    show_toast_with_class(message, "copy-toast copy-toast-warning");
+    show_toast_for(message, "copy-toast copy-toast-warning", 1_600);
 }
 
-fn show_toast_with_class(message: &str, class_name: &str) {
+/// Longer-lived variant for toasts the user must read and act on (setup
+/// instructions), instead of the blink-and-gone copy confirmation.
+pub(crate) fn show_actionable_toast(message: &str) {
+    show_toast_for(message, "copy-toast", 8_000);
+}
+
+pub(crate) fn show_actionable_warning_toast(message: &str) {
+    show_toast_for(message, "copy-toast copy-toast-warning", 8_000);
+}
+
+fn show_toast_for(message: &str, class_name: &str, duration_ms: i32) {
     let Some(window) = web_sys::window() else {
         return;
     };
@@ -53,7 +63,7 @@ fn show_toast_with_class(message: &str, class_name: &str) {
     let remove = Closure::once(move || toast.remove());
     let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
         remove.as_ref().unchecked_ref(),
-        1_600,
+        duration_ms,
     );
     remove.forget();
 }

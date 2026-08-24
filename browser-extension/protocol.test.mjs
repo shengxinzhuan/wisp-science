@@ -16,8 +16,6 @@ test("handshake reports protocol 2 and extension 0.3.0", () => {
   assert.equal(payload.extension_version, "0.3.0");
   assert.ok(payload.capabilities.includes("article_scan"));
   assert.ok(payload.capabilities.includes("asset_download"));
-  assert.ok(payload.capabilities.includes("chatgpt_turn"));
-  assert.ok(payload.capabilities.includes("chat_turn"));
   assert.equal(payload.session, "shared");
   assert.equal(payload.tabs.length, 1);
 });

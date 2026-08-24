@@ -66,16 +66,6 @@ fn item(action: &str, label: String, payload: String) -> CtxItem {
     }
 }
 
-pub(crate) fn motif_sequence_path(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    [
-        ".dna", ".fa", ".fasta", ".fna", ".ffn", ".faa", ".frn", ".gb", ".gbk",
-        ".genbank", ".seq",
-    ]
-    .iter()
-    .any(|extension| lower.ends_with(extension))
-}
-
 fn submenu(label: String, children: Vec<CtxItem>) -> CtxItem {
     CtxItem {
         action: String::new(),
@@ -656,16 +646,6 @@ pub fn build(
                         location.clone(),
                     ),
                 );
-                if motif_sequence_path(&path) {
-                    items.insert(
-                        2,
-                        item(
-                            "addWorkspaceFileToMotif",
-                            i18n::t(locale, "ctx.add_to_motif"),
-                            location.clone(),
-                        ),
-                    );
-                }
                 items.push(item(
                     "downloadFile",
                     i18n::t(locale, "artifact.download"),
@@ -762,15 +742,6 @@ pub fn build(
                     i18n::t(locale, "ctx.attach_file"),
                     path.clone(),
                 ),
-            ]);
-            if motif_sequence_path(&path) {
-                items.push(item(
-                    "addWorkspaceFileToMotif",
-                    i18n::t(locale, "ctx.add_to_motif"),
-                    path.clone(),
-                ));
-            }
-            items.extend([
                 item(
                     "registerWorkspaceArtifact",
                     i18n::t(locale, "ctx.register_artifact"),
@@ -1294,20 +1265,5 @@ pub fn ContextMenuPortal(
                 }}
             }.into_view())
         }}
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::motif_sequence_path;
-
-    #[test]
-    fn motif_menu_accepts_sequence_files_but_not_unrelated_documents() {
-        for path in ["vector.dna", "refs/insert.FASTA", "plasmid.gbk", "read.seq"] {
-            assert!(motif_sequence_path(path), "{path}");
-        }
-        for path in ["notes.md", "results.csv", "figure.png", "archive.zip"] {
-            assert!(!motif_sequence_path(path), "{path}");
-        }
     }
 }

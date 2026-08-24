@@ -32,4 +32,3 @@ __pycache__/
 *.pyc
 *.pyo
 .vscode
-.DS_Store

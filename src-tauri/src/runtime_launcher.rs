@@ -185,7 +185,7 @@ impl RuntimeLauncher for TauriRuntimeLauncher {
                 &self.python_worker,
                 "python",
             ),
-            RuntimeLanguage::R => (local_direct_rscript(&context)?, &self.r_worker, "r"),
+            RuntimeLanguage::R => (resolve_r_interpreter(&context)?, &self.r_worker, "r"),
         };
         if !worker.is_file() {
             return Err(anyhow!(
@@ -225,13 +225,24 @@ impl RuntimeLauncher for TauriRuntimeLauncher {
             project_root,
         )
         .map_err(anyhow::Error::msg)?;
-        let mut envs = launch_envs(
-            &context,
-            key.language,
-            &interpreter,
-            &self.envs,
-            crate::models::service_env(),
-        );
+        let mut envs = if context.kind == wisp_store::ExecutionContextKind::Local
+            && key.language == RuntimeLanguage::Python
+        {
+            self.envs.clone()
+        } else {
+            Vec::new()
+        };
+        if context.kind == wisp_store::ExecutionContextKind::Local
+            && key.language == RuntimeLanguage::Python
+        {
+            for (name, value) in crate::models::service_env() {
+                if let Some((_, current)) = envs.iter_mut().find(|(current, _)| current == &name) {
+                    *current = value;
+                } else {
+                    envs.push((name, value));
+                }
+            }
+        }
         let ssh_auth_envs = if context.kind == wisp_store::ExecutionContextKind::Ssh {
             let connection =
                 SshConnection::from_execution_context(&context).map_err(anyhow::Error::msg)?;
@@ -335,51 +346,6 @@ fn resolve_r_interpreter(context: &wisp_store::ExecutionContext) -> Result<Strin
         "Rscript interpreter is unknown for {}; probe the context or configure rscript_executable",
         context.id
     ))
-}
-
-/// Environment for one launched worker, over and above what the child inherits.
-///
-/// A local interpreter that lives inside a conda/pixi prefix needs that prefix
-/// on the child's `PATH` to load its own shared libraries; the host environment
-/// is never touched. API credentials stay limited to local Python, and remote
-/// contexts get neither: their environment is the remote shell's business.
-fn launch_envs(
-    context: &wisp_store::ExecutionContext,
-    language: RuntimeLanguage,
-    interpreter: &str,
-    base: &[(String, String)],
-    service: Vec<(String, String)>,
-) -> Vec<(String, String)> {
-    if context.kind != wisp_store::ExecutionContextKind::Local {
-        return Vec::new();
-    }
-    let mut envs = wisp_runtime::conda_prefix_envs(Path::new(interpreter));
-    if language == RuntimeLanguage::Python {
-        for (name, value) in base.iter().cloned().chain(service) {
-            upsert_env(&mut envs, name, value);
-        }
-    }
-    envs
-}
-
-fn upsert_env(envs: &mut Vec<(String, String)>, name: String, value: String) {
-    match envs.iter_mut().find(|(current, _)| current == &name) {
-        Some((_, current)) => *current = value,
-        None => envs.push((name, value)),
-    }
-}
-
-/// Resolve the configured `Rscript`, then on a local Windows context launch the
-/// real binary behind the `bin\Rscript.exe` architecture shim. Remote contexts
-/// keep the configured path: their filesystem layout is not ours to inspect.
-fn local_direct_rscript(context: &wisp_store::ExecutionContext) -> Result<String> {
-    let configured = resolve_r_interpreter(context)?;
-    if context.kind != wisp_store::ExecutionContextKind::Local {
-        return Ok(configured);
-    }
-    Ok(wisp_runtime::direct_rscript(Path::new(&configured))
-        .to_string_lossy()
-        .into_owned())
 }
 
 fn ensure_jsonlite_available(
@@ -842,69 +808,6 @@ mod tests {
             .unwrap()
             .to_string_lossy()
             .contains("--vanilla"));
-    }
-
-    /// A pixi/conda interpreter cannot find its own shared libraries without
-    /// its prefix on PATH; on Windows that is the difference between a working
-    /// R kernel and an immediate 0xC0000135 exit (#941).
-    #[test]
-    fn local_launches_add_the_interpreter_prefix_to_the_child_path() {
-        let prefix = std::env::temp_dir().join(format!("wisp-launch-env-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(prefix.join("conda-meta")).unwrap();
-        let rscript = prefix
-            .join("lib")
-            .join("R")
-            .join("bin")
-            .join("Rscript")
-            .to_string_lossy()
-            .into_owned();
-        let local = wisp_store::ExecutionContext::new("local", "Local").unwrap();
-        let credentials = vec![("OPENAI_API_KEY".to_string(), "secret".to_string())];
-
-        let r_envs = launch_envs(
-            &local,
-            RuntimeLanguage::R,
-            &rscript,
-            &[],
-            credentials.clone(),
-        );
-        assert_eq!(r_envs.len(), 1, "{r_envs:?}");
-        assert_eq!(r_envs[0].0, "PATH");
-        assert!(r_envs[0].1.contains(&prefix.to_string_lossy().into_owned()));
-
-        // Python keeps its credentials and gains the same prefix PATH.
-        let python_envs = launch_envs(
-            &local,
-            RuntimeLanguage::Python,
-            &prefix.join("python").to_string_lossy(),
-            &[],
-            credentials.clone(),
-        );
-        assert!(python_envs.iter().any(|(name, _)| name == "PATH"));
-        assert!(python_envs.contains(&credentials[0]));
-
-        // A remote context's environment belongs to the remote shell.
-        let mut ssh = wisp_store::ExecutionContext::new("ssh:cpu2", "CPU2").unwrap();
-        ssh.kind = wisp_store::ExecutionContextKind::Ssh;
-        assert!(launch_envs(
-            &ssh,
-            RuntimeLanguage::Python,
-            &rscript,
-            &[],
-            credentials.clone()
-        )
-        .is_empty());
-
-        // An interpreter outside any prefix must not gain a PATH override.
-        let system = launch_envs(
-            &local,
-            RuntimeLanguage::Python,
-            "/usr/bin/python3",
-            &[],
-            credentials.clone(),
-        );
-        assert_eq!(system, credentials);
-        let _ = std::fs::remove_dir_all(&prefix);
     }
 
     #[test]

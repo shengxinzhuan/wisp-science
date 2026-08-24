@@ -25,9 +25,8 @@ runs:
         set -euo pipefail
         deadline=$((SECONDS + TIMEOUT))
         while (( SECONDS < deadline )); do
-          # tauri-action needs the numeric REST databaseId, not the GraphQL node id.
-          if id="$(gh release view "$TAG" --json databaseId --jq .databaseId 2>/dev/null)" && [ -n "$id" ]; then
-            echo "Found release $TAG databaseId=$id"
+          if id="$(gh release view "$TAG" --json id --jq .id 2>/dev/null)" && [ -n "$id" ]; then
+            echo "Found release $TAG id=$id"
             echo "release-id=$id" >> "$GITHUB_OUTPUT"
             exit 0
           fi

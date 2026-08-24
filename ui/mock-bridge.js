@@ -612,6 +612,25 @@
             ];
           case "read_file":
             return mockFile(argValue(args, "path"));
+          case "read_file_bytes": {
+            // media_url path: mock images are small SVGs, so plain UTF-8
+            // bytes are enough for the blob object URL pipeline.
+            const file = mockFile(argValue(args, "path"));
+            if (!file.base64) throw new Error("mock binary read is image-only");
+            const binary = atob(file.base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            return bytes;
+          }
+          case "read_artifact_version_bytes":
+          case "read_artifact_bytes": {
+            const file = mockFile(argValue(args, "path") ?? "volcano_plot.png");
+            if (!file.base64) throw new Error("mock binary read is image-only");
+            const binary = atob(file.base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            return bytes;
+          }
           case "read_artifact": {
             const names = { h1: "deseq2_results.tsv", h2: "volcano_plot.png", h3: "out.bam" };
             return mockFile(names[String(argValue(args, "id") ?? "")] ?? "report.csv");
@@ -859,6 +878,8 @@
           case "open_external_url":
             if (args?.url) window.open(args.url, "_blank", "noopener,noreferrer");
             return null;
+          case "open_browser_extension_page":
+            return { extension_path: "/mock/wisp/browser-extension", opened: false };
           case "list_library_items":
             return libraryItems;
           case "get_research_graph":

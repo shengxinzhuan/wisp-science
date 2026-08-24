@@ -85,10 +85,7 @@ test("composer resize target stays functional without drawing a horizontal line"
   expect(box).not.toBeNull();
   await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
   await page.mouse.down();
-  // mousedown reactively mounts the drag overlay that captures the following
-  // move/up events; wait for it so a slow render cannot swallow the drag.
-  await expect(page.locator(".drag-overlay")).toHaveCount(1);
-  await page.mouse.move(box!.x + box!.width / 2, box!.y - 40, { steps: 4 });
+  await page.mouse.move(box!.x + box!.width / 2, box!.y - 40);
   await page.mouse.up();
 
   await expect.poll(() => input.evaluate((el) => parseFloat(getComputedStyle(el).height))).toBeGreaterThan(220);

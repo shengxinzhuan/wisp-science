@@ -325,26 +325,3 @@ fn trajectory_snapshot_contract() {
     assert_eq!(dto.stats.cache_hit_pct, Some(75.0));
     assert_eq!(dto.stats.tokens_per_sec, Some(12.5));
 }
-
-#[test]
-fn browser_tab_cleanup_prompt_contract() {
-    let prompt = wisp_dto::BrowserTabCleanupPrompt {
-        turn_id: "turn-1".into(),
-        frame_id: "frame-1".into(),
-        tabs: vec![wisp_dto::BrowserTabCleanupItem {
-            session: "shared".into(),
-            tab_id: 42,
-            url: "https://example.com/paper".into(),
-            title: "Paper".into(),
-            initial_url: "https://example.com".into(),
-        }],
-    };
-    let dto: wisp_dto::BrowserTabCleanupPrompt = roundtrip(&prompt);
-    assert_eq!(dto.turn_id, "turn-1");
-    assert_eq!(dto.frame_id, "frame-1");
-    assert_eq!(dto.tabs[0].session, "shared");
-    assert_eq!(dto.tabs[0].tab_id, 42);
-    assert_eq!(dto.tabs[0].url, "https://example.com/paper");
-    assert_eq!(dto.tabs[0].title, "Paper");
-    assert_eq!(dto.tabs[0].initial_url, "https://example.com");
-}

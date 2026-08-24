@@ -50,7 +50,7 @@ impl Tool for WriteTool {
                 ));
             }
         }
-        if let Err(e) = crate::safety::write_no_follow(&real, content.as_bytes()) {
+        if let Err(e) = std::fs::write(&real, &content) {
             return ToolResult::fail(format!("write {path} error: {e}"));
         }
         env.emit(ToolEvent::FileChanged { path: path.clone() })
@@ -105,35 +105,5 @@ mod tests {
             .iter()
             .any(|event| matches!(event, ToolEvent::FileChanged { path } if path == "new.R")));
         std::fs::remove_dir_all(&tmp).ok();
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn write_through_a_dangling_outbound_symlink_is_blocked() {
-        let base = std::env::temp_dir().join(format!("wisp_write_dangling_{}", std::process::id()));
-        std::fs::remove_dir_all(&base).ok();
-        let root = base.join("project");
-        let outside = base.join("outside");
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::create_dir_all(&outside).unwrap();
-        // Project-local link to a nonexistent file outside the root: following
-        // it would create /outside/escape.txt.
-        std::os::unix::fs::symlink(outside.join("escape.txt"), root.join("sneaky.txt")).unwrap();
-        let env = RecordingEnv {
-            root: root.clone(),
-            events: Mutex::new(Vec::new()),
-        };
-
-        let result = WriteTool
-            .run(&json!({ "path": "sneaky.txt", "content": "pwned" }), &env)
-            .await;
-
-        assert!(!result.success, "{}", result.content);
-        assert!(
-            !outside.join("escape.txt").exists(),
-            "the escape target must not be created"
-        );
-        assert!(env.events.lock().unwrap().is_empty());
-        std::fs::remove_dir_all(&base).ok();
     }
 }

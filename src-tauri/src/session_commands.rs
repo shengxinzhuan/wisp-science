@@ -1262,30 +1262,6 @@ pub(super) async fn load_session(
     })
 }
 
-/// Reload a session's persisted messages and UI events, then fold them into
-/// a trajectory snapshot. The HTML export command repeats this same store
-/// read so it never depends on the frontend's filtered inspector view.
-async fn folded_session_trajectory(
-    store: &wisp_store::Store,
-    frame_id: &str,
-) -> Result<trajectory::TrajectorySnapshot, String> {
-    let messages = store
-        .load_messages_with_seq(frame_id)
-        .await
-        .map_err(|error| error.to_string())?;
-    let events = store
-        .load_session_ui_events_timed(frame_id)
-        .await
-        .map_err(|error| error.to_string())?;
-    let model = store
-        .frame_model(frame_id)
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(trajectory::fold_trajectory(
-        frame_id, model, &messages, &events,
-    ))
-}
-
 /// Fold a session's stored messages and persisted UI events into the
 /// trajectory (轨迹) view: turns of user/assistant/tool/usage cells with
 /// timing and token statistics. Read-only; does not touch window state.
@@ -1294,7 +1270,24 @@ pub(super) async fn load_session_trajectory(
     state: State<'_, AppState>,
     frame_id: String,
 ) -> Result<trajectory::TrajectorySnapshot, String> {
-    folded_session_trajectory(&state.store, &frame_id).await
+    let messages = state
+        .store
+        .load_messages_with_seq(&frame_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let events = state
+        .store
+        .load_session_ui_events_timed(&frame_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let model = state
+        .store
+        .frame_model(&frame_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(trajectory::fold_trajectory(
+        &frame_id, model, &messages, &events,
+    ))
 }
 
 /// Mark which session this window is viewing without loading it. The UI calls

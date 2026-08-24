@@ -512,8 +512,6 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   let sessionSpecialists: Record<string, string> = {};
   let mockBrowserUrlFilters = { block: [] as { host: string; reason?: string }[], prefer: [] as { host: string; reason?: string }[] };
   let mockBrowserAutoLaunch = true;
-  let mockBrowserAutoCloseTabs = false;
-  let mockPendingBrowserTabCleanups: any[] = [];
   let mockQuickActions = [{
     id: "literature_research",
     name: "Research literature",
@@ -2565,23 +2563,6 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "set_browser_auto_launch":
             mockBrowserAutoLaunch = Boolean(arg("enabled"));
             return mockBrowserAutoLaunch;
-          case "get_browser_auto_close_tabs":
-            return mockBrowserAutoCloseTabs;
-          case "set_browser_auto_close_tabs":
-            mockBrowserAutoCloseTabs = Boolean(arg("enabled"));
-            return mockBrowserAutoCloseTabs;
-          case "list_pending_browser_tab_cleanups":
-            return mockPendingBrowserTabCleanups;
-          case "confirm_browser_tab_cleanup": {
-            const turnId = String(arg("turnId") ?? "");
-            mockPendingBrowserTabCleanups = mockPendingBrowserTabCleanups.filter((row: any) => row.turn_id !== turnId);
-            return (arg("tabs") ?? []).map((tab: any) => Number(tab.tab_id)).filter((id: number) => Number.isInteger(id));
-          }
-          case "dismiss_browser_tab_cleanup": {
-            const turnId = String(arg("turnId") ?? "");
-            mockPendingBrowserTabCleanups = mockPendingBrowserTabCleanups.filter((row: any) => row.turn_id !== turnId);
-            return null;
-          }
           case "set_browser_url_filters": {
             const next = plain(arg("filters") ?? {});
             mockBrowserUrlFilters = {
@@ -4057,6 +4038,13 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             if (path.includes(".docx")) return base64Bytes(docxBase64);
             if (path.includes(".xlsx") && xlsxBase64) return base64Bytes(xlsxBase64);
             if (path.includes(".pptx") && pptxBase64) return base64Bytes(pptxBase64);
+            // Chat media (artifact thumbnails, generated-image cards) fetches
+            // images through the blob-object-URL pipeline; hand back a small
+            // SVG so `blob:` sources resolve in tests.
+            if (/\.(png|jpe?g|gif|webp|svg)$/.test(path)) {
+              const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="6"><rect width="8" height="6" fill="#9af"/></svg>`;
+              return new TextEncoder().encode(svg);
+            }
             throw new Error("Binary fixture not found");
           }
           case "read_artifact":
@@ -4109,12 +4097,6 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           }
           case "export_session":
             return "/mock/export.zip";
-          case "export_session_trajectory":
-            if ((window as any).__trajectoryExportCancel) return null;
-            if ((window as any).__trajectoryExportError) {
-              throw new Error(String((window as any).__trajectoryExportError));
-            }
-            return "/mock/wisp-trajectory.html";
           case "save_share_image":
             return "/mock/wisp-share.png";
           case "save_share_html":
@@ -5680,9 +5662,6 @@ export function parallelMock(): void {
           case "read_file": return { path: "x", mime: "text/plain", text: "", base64: null };
           case "missing_files": return [];
           case "export_session": return "/mock/export.zip";
-          case "export_session_trajectory":
-            if ((window as any).__trajectoryExportCancel) return null;
-            return "/mock/wisp-trajectory.html";
           case "import_session_archive": return {
             frame_id: "imported-frame", status: "imported",
             message_count: 3, artifact_count: 0, missing_artifacts: [],

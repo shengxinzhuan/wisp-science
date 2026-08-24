@@ -300,15 +300,6 @@ pub trait ToolEnv: Send + Sync {
     /// Paths an interpreter reported writing during the current tool call.
     /// Default: dropped — hosts that do not track attribution lose nothing.
     fn report_written_paths(&self, _paths: &[String]) {}
-    /// Host-owned id of the in-flight user-visible turn. Browser tools use it
-    /// to attribute newly created tabs; CLI and tests leave this unset.
-    fn turn_id(&self) -> Option<&str> {
-        None
-    }
-    /// Conversation frame this tool call belongs to. Paired with [`turn_id`].
-    fn frame_id(&self) -> Option<&str> {
-        None
-    }
 }
 
 #[derive(Debug, Clone)]

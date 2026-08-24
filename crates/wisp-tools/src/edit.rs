@@ -137,7 +137,7 @@ impl Tool for EditTool {
         } else {
             text.replacen(&old, &new, 1)
         };
-        if let Err(e) = crate::safety::write_no_follow(&real, replaced.as_bytes()) {
+        if let Err(e) = std::fs::write(&real, &replaced) {
             return ToolResult::fail(format!("edit {path} error: {e}"));
         }
         env.emit(ToolEvent::FileChanged { path: path.clone() })

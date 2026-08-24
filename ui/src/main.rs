@@ -27,20 +27,18 @@ use agent_workflows::{
     agent_workflows_panel, refresh_agent_resources, refresh_agent_workflows, AgentPanelState,
 };
 use app_overlays::{
-    advance_browser_tab_cleanup, present_browser_tab_cleanup, BrowserTabCleanupOverlay,
-    BrowserTabCleanupOverlayState, ContextRecoveryOverlay, ContextRecoveryOverlayState,
-    ExternalLinkConfirm, ProjectExportPrompt, ProjectExportPromptState, ProjectTransferOverlay,
-    ProjectTransferOverlayState, SshConnectivityOverlay, SshConnectivityOverlayState,
-    TurnMemoryOverlay, TurnMemoryOverlayState, UpdateCheckOverlay, UpdateCheckOverlayState,
+    ContextRecoveryOverlay, ContextRecoveryOverlayState, ExternalLinkConfirm, ProjectExportPrompt,
+    ProjectExportPromptState, ProjectTransferOverlay, ProjectTransferOverlayState,
+    SshConnectivityOverlay, SshConnectivityOverlayState, TurnMemoryOverlay, TurnMemoryOverlayState,
+    UpdateCheckOverlay, UpdateCheckOverlayState,
 };
 use bindings::{
-    add_workspace_file_to_motif, attach_chat_autoscroll, cancel_saved_marks_apply,
-    clear_selection, close_mcp_app,
+    attach_chat_autoscroll, cancel_saved_marks_apply, clear_selection, close_mcp_app,
     force_chat_bottom, invoke, invoke_checked, is_mac, is_windows, jump_chat_to_item,
     jump_chat_to_user, listen, listen_current_window, listen_native_file_drop,
-    native_drop_in_composer, open_external_url, pasted_image_count, preserve_chat_prepend_position,
-    preview_selection, restore_chat_session_scroll, schedule_chat_follow, set_saved_marks,
-    CHAT_SCROLLER_ID, CHAT_THREAD_ID,
+    native_drop_in_composer, open_browser_extension_page, open_external_url, pasted_image_count,
+    preserve_chat_prepend_position, preview_selection, restore_chat_session_scroll,
+    schedule_chat_follow, set_saved_marks, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
 };
 use context_menu::{ContextMenuPortal, CtxMenu};
 use dto::*;
@@ -323,7 +321,6 @@ fn App() -> impl IntoView {
     });
     let input = create_rw_signal(String::new());
     let attachments = create_rw_signal::<Vec<ComposerAttachment>>(vec![]);
-    let motif_selection = create_rw_signal(None::<MotifSelection>);
     let uploading = create_rw_signal(false);
     let remote_file_uploading = create_rw_signal(false);
     let files_drag_over = create_rw_signal(false);
@@ -832,11 +829,6 @@ fn App() -> impl IntoView {
     // Live web retrieval failed because the Chrome extension is disconnected.
     // Root-owned so Escape can dismiss it without first focusing the banner.
     let browser_offline_notice = create_rw_signal::<Option<BrowserOfflineNotice>>(None);
-    let browser_tab_cleanup = create_rw_signal(None::<BrowserTabCleanupPrompt>);
-    let browser_tab_cleanup_queue = create_rw_signal(Vec::<BrowserTabCleanupPrompt>::new());
-    let browser_tab_cleanup_selected = create_rw_signal(HashSet::<(String, i64)>::new());
-    let browser_tab_cleanup_busy = create_rw_signal(false);
-    let browser_tab_cleanup_error = create_rw_signal(None::<String>);
     // "不再提醒更新" opt-out; loaded on startup, mirrored by the settings toggle.
     let update_check_enabled = create_rw_signal(true);
     // Set when a send fails because no API key is configured, so the status bar
@@ -1228,8 +1220,6 @@ fn App() -> impl IntoView {
         })
     });
     let artifact_count = create_memo(move |_| artifacts.with(Vec::len));
-    let artifact_render_fingerprint =
-        create_memo(move |_| artifacts.with(|artifacts| artifacts_fingerprint(artifacts)));
     let notebook_count = create_memo(move |_| notebook_cells.with(Vec::len));
     let provenance_count = create_memo(move |_| provenance_rows.with(Vec::len));
     let highlight_count = create_memo(move |_| {
@@ -2159,25 +2149,30 @@ fn App() -> impl IntoView {
     let show_right_cb = show_right;
     let mcp_apps_cb = mcp_apps;
     let show_mcp_app = Callback::new(
-        move |(frame_id, payload, replace): (String, serde_json::Value, bool)| {
-            let instance_id = mcp_app_instance_id(&frame_id, &payload);
+        move |(frame_id, presentation_id, payload, replace): (
+            String,
+            String,
+            serde_json::Value,
+            bool,
+        )| {
+            let instance_id = mcp_app_instance_id(&frame_id, &presentation_id, &payload);
             if !replace && mcp_apps_cb.with_untracked(|apps| apps.contains_key(&instance_id)) {
                 return;
             }
             let Ok(payload_json) = serde_json::to_string(&payload) else {
                 return;
             };
-            let title = mcp_app_title(&payload);
+            let tab = CenterFileTab::new(
+                instance_id.clone(),
+                mcp_app_title(&payload),
+                "mcp_app".into(),
+            );
             mcp_apps_cb.update(|apps| {
                 apps.insert(instance_id.clone(), payload_json);
             });
             center_files_cb.update(|files| {
                 if !files.iter().any(|file| file.path == instance_id) {
-                    files.push(CenterFileTab::new(
-                        instance_id.clone(),
-                        title,
-                        "mcp_app".into(),
-                    ));
+                    files.push(tab);
                 }
             });
             center_file_cb.set(Some(instance_id));
@@ -2601,7 +2596,7 @@ fn App() -> impl IntoView {
             }
             AgentEvent::ToolPresentation {
                 frame_id,
-                presentation_id: _,
+                presentation_id,
                 presentation_kind,
                 payload,
             } => {
@@ -2624,7 +2619,7 @@ fn App() -> impl IntoView {
                 } else if presentation_kind == "mcp_app"
                     && active_cb.get_untracked().as_deref() == Some(frame_id.as_str())
                 {
-                    show_mcp_app.call((frame_id, payload, true));
+                    show_mcp_app.call((frame_id, presentation_id, payload, true));
                 }
             }
             AgentEvent::Usage {
@@ -3133,47 +3128,6 @@ fn App() -> impl IntoView {
     spawn_local(async move {
         let _ = listen("confirm-request", &confirm_js).await;
     });
-
-    let browser_cleanup_pending = browser_tab_cleanup;
-    let browser_cleanup_queue = browser_tab_cleanup_queue;
-    let browser_cleanup_selected = browser_tab_cleanup_selected;
-    let browser_cleanup_error = browser_tab_cleanup_error;
-    let browser_cleanup_cb = Closure::wrap(Box::new(move |payload: JsValue| {
-        if let Ok(prompt) = serde_wasm_bindgen::from_value::<BrowserTabCleanupPrompt>(payload) {
-            present_browser_tab_cleanup(
-                browser_cleanup_pending,
-                browser_cleanup_queue,
-                browser_cleanup_selected,
-                browser_cleanup_error,
-                prompt,
-            );
-        }
-    }) as Box<dyn FnMut(JsValue)>);
-    let browser_cleanup_js = browser_cleanup_cb
-        .as_ref()
-        .unchecked_ref::<js_sys::Function>()
-        .clone();
-    std::mem::forget(browser_cleanup_cb);
-    spawn_local(async move {
-        let _ = listen("browser-tab-cleanup", &browser_cleanup_js).await;
-        if let Ok(value) =
-            invoke_checked("list_pending_browser_tab_cleanups", JsValue::UNDEFINED).await
-        {
-            if let Ok(prompts) =
-                serde_wasm_bindgen::from_value::<Vec<BrowserTabCleanupPrompt>>(value)
-            {
-                for prompt in prompts {
-                    present_browser_tab_cleanup(
-                        browser_cleanup_pending,
-                        browser_cleanup_queue,
-                        browser_cleanup_selected,
-                        browser_cleanup_error,
-                        prompt,
-                    );
-                }
-            }
-        }
-    });
     let acp_permission_items = items;
     let acp_permission_active = active_session;
     let acp_permission_transcripts = transcripts;
@@ -3575,7 +3529,6 @@ fn App() -> impl IntoView {
             queue_seq.set(qid);
             input.set(String::new());
             attachments.set(vec![]);
-            motif_selection.set(None);
             composer_references.set(vec![]);
             composer_quotes.set(vec![]);
             picker_mode.set(None);
@@ -3624,7 +3577,6 @@ fn App() -> impl IntoView {
         };
         input.set(String::new());
         attachments.set(vec![]);
-        motif_selection.set(None);
         composer_references.set(vec![]);
         composer_quotes.set(vec![]);
         picker_mode.set(None);
@@ -5395,7 +5347,12 @@ fn App() -> impl IntoView {
                     );
                     for presentation in presentations {
                         if presentation.presentation_kind == "mcp_app" {
-                            show_mcp_app.call((id.clone(), presentation.payload, false));
+                            show_mcp_app.call((
+                                id.clone(),
+                                presentation.presentation_id,
+                                presentation.payload,
+                                false,
+                            ));
                         }
                     }
                     restore_chat_session_scroll(&id);
@@ -7153,6 +7110,25 @@ fn App() -> impl IntoView {
     refresh_runtimes(runtime_infos);
     refresh_runs(run_records, locale);
     {
+        // UI liveness heartbeat for the backend watchdog: a webview whose
+        // renderer died (process crash / WASM panic) stops beating and gets
+        // reloaded; see `run_ui_watchdog` in src-tauri/src/lib.rs.
+        let beat = Closure::wrap(Box::new(move || {
+            spawn_local(async move {
+                let _ = invoke("ui_heartbeat", JsValue::UNDEFINED).await;
+            });
+        }) as Box<dyn FnMut()>);
+        let _ = web_sys::window().and_then(|window| {
+            window
+                .set_interval_with_callback_and_timeout_and_arguments_0(
+                    beat.as_ref().unchecked_ref(),
+                    5_000,
+                )
+                .ok()
+        });
+        beat.forget();
+    }
+    {
         let ticks = Cell::new(0_u8);
         let refresh = Closure::wrap(Box::new(move || {
             run_clock.set(now_secs());
@@ -7389,36 +7365,6 @@ fn App() -> impl IntoView {
             ) {
                 let _ = attach_ready_path(attachments, payload);
                 focus_composer();
-                return;
-            }
-            if action == "addWorkspaceFileToMotif" {
-                if let Some(instance_id) = active_motif_instance(&mcp_apps.get_untracked()) {
-                    spawn_local(async move {
-                        match add_workspace_file_to_motif(&instance_id, &payload).await {
-                            Ok(_) => show_toast(&tf(
-                                locale.get_untracked(),
-                                "motif.added_file",
-                                &[("name", payload.rsplit(['/', '\\']).next().unwrap_or(&payload))],
-                            )),
-                            Err(error) => show_warning_toast(&js_error_text(error)),
-                        }
-                    });
-                } else {
-                    let _ = attach_ready_path(attachments, payload.clone());
-                    let filename = payload.rsplit(['/', '\\']).next().unwrap_or(&payload);
-                    input.update(|draft| {
-                        if !draft.trim().is_empty() {
-                            draft.push_str("\n\n");
-                        }
-                        draft.push_str(&tf(
-                            locale.get_untracked(),
-                            "motif.open_and_add_prompt",
-                            &[("name", filename)],
-                        ));
-                    });
-                    show_warning_toast(&t(locale.get_untracked(), "motif.open_first"));
-                    focus_composer();
-                }
                 return;
             }
             if action == "registerWorkspaceArtifact" {
@@ -7853,26 +7799,6 @@ fn App() -> impl IntoView {
             external_link_confirm.set(None);
             return;
         }
-        if browser_tab_cleanup.get().is_some() {
-            ev.prevent_default();
-            if !browser_tab_cleanup_busy.get() {
-                if let Some(prompt) = browser_tab_cleanup.get_untracked() {
-                    let turn_id = prompt.turn_id.clone();
-                    spawn_local(async move {
-                        let arg = to_value(&serde_json::json!({ "turnId": turn_id })).unwrap();
-                        let _ = invoke_checked("dismiss_browser_tab_cleanup", arg).await;
-                    });
-                }
-                advance_browser_tab_cleanup(
-                    browser_tab_cleanup,
-                    browser_tab_cleanup_queue,
-                    browser_tab_cleanup_selected,
-                    browser_tab_cleanup_error,
-                    browser_tab_cleanup_busy,
-                );
-            }
-            return;
-        }
         if turn_memory_proposal.get().is_some() {
             ev.prevent_default();
             if !turn_memory_busy.get() {
@@ -7889,13 +7815,6 @@ fn App() -> impl IntoView {
                 context_recovery_dialog.set(None);
                 context_recovery_error.set(None);
             }
-            return;
-        }
-        // The model switch confirm renders above the export/link/memory
-        // dialogs and everything below; Escape cancels the switch only.
-        if model_switch_confirm.get().is_some() {
-            ev.prevent_default();
-            model_switch_confirm.set(None);
             return;
         }
         if project_export_prompt.get().is_some() {
@@ -9528,63 +9447,6 @@ fn App() -> impl IntoView {
         />
         <ProjectTransferOverlay state=ProjectTransferOverlayState { locale, project_transfer } />
         <ExternalLinkConfirm locale=locale pending=external_link_confirm />
-        <BrowserTabCleanupOverlay
-            state=BrowserTabCleanupOverlayState {
-                locale,
-                pending: browser_tab_cleanup,
-                selected: browser_tab_cleanup_selected,
-                busy: browser_tab_cleanup_busy,
-                error: browser_tab_cleanup_error,
-            }
-            on_keep=Callback::new(move |_| {
-                if browser_tab_cleanup_busy.get_untracked() {
-                    return;
-                }
-                let Some(prompt) = browser_tab_cleanup.get_untracked() else {
-                    return;
-                };
-                browser_tab_cleanup_busy.set(true);
-                spawn_local(async move {
-                    let arg = to_value(&serde_json::json!({ "turnId": prompt.turn_id })).unwrap();
-                    let _ = invoke_checked("dismiss_browser_tab_cleanup", arg).await;
-                    advance_browser_tab_cleanup(
-                        browser_tab_cleanup,
-                        browser_tab_cleanup_queue,
-                        browser_tab_cleanup_selected,
-                        browser_tab_cleanup_error,
-                        browser_tab_cleanup_busy,
-                    );
-                });
-            })
-            on_close=Callback::new(move |tabs: Vec<BrowserTabCleanupItem>| {
-                if browser_tab_cleanup_busy.get_untracked() {
-                    return;
-                }
-                let Some(prompt) = browser_tab_cleanup.get_untracked() else {
-                    return;
-                };
-                browser_tab_cleanup_busy.set(true);
-                spawn_local(async move {
-                    let arg = to_value(&serde_json::json!({
-                        "turnId": prompt.turn_id,
-                        "tabs": tabs,
-                    })).unwrap();
-                    match invoke_checked("confirm_browser_tab_cleanup", arg).await {
-                        Ok(_) => advance_browser_tab_cleanup(
-                            browser_tab_cleanup,
-                            browser_tab_cleanup_queue,
-                            browser_tab_cleanup_selected,
-                            browser_tab_cleanup_error,
-                            browser_tab_cleanup_busy,
-                        ),
-                        Err(err) => {
-                            browser_tab_cleanup_busy.set(false);
-                            browser_tab_cleanup_error.set(Some(js_error_text(err)));
-                        }
-                    }
-                });
-            })
-        />
         <TurnMemoryOverlay
             state=TurnMemoryOverlayState {
                 locale,
@@ -9792,11 +9654,6 @@ fn App() -> impl IntoView {
                 })}
                 <div class="center-tabs" role="tablist">
                     <button type="button" class="center-tab" class:active=move || center_file.get().is_none()
-                        title=move || if demo_mode.get() {
-                            t(locale.get(), "projects.example").into()
-                        } else {
-                            center_conversation_title.get()
-                        }
                         on:click=move |_| center_file.set(None)>
                         <span class="center-tab-label">{move || if demo_mode.get() {
                             t(locale.get(), "projects.example").into()
@@ -9815,7 +9672,7 @@ fn App() -> impl IntoView {
                             view! {
                                 <div class="center-tab-wrap">
                                     <button type="button" class="center-tab" class:active=move || center_file.get().as_ref() == Some(&path)
-                                        title=label.clone() data-center-path=path.clone()
+                                        title=path.clone() data-center-path=path.clone()
                                         on:click=move |_| center_file.set(Some(select_path.clone()))>
                                         <span class="center-tab-label">{label}</span>
                                     </button>
@@ -10138,21 +9995,7 @@ fn App() -> impl IntoView {
                         </div>
                         {if is_mcp_app {
                             mcp_apps.get().get(&path).cloned().map(|payload_json| view! {
-                                <McpAppPreview
-                                    instance_id=path.clone()
-                                    payload_json=payload_json
-                                    on_selection=Callback::new(move |selection: MotifSelection| {
-                                        let block = selection.composer_text();
-                                        input.update(|draft| {
-                                            if !draft.trim().is_empty() {
-                                                draft.push_str("\n\n");
-                                            }
-                                            draft.push_str(&block);
-                                        });
-                                        motif_selection.set(Some(selection));
-                                        focus_composer();
-                                    })
-                                />
+                                <McpAppPreview instance_id=path.clone() payload_json=payload_json />
                             }).into_view()
                         } else {
                             view! {
@@ -10551,7 +10394,6 @@ fn App() -> impl IntoView {
                     <For
                         each=move || {
                             use std::hash::{Hash, Hasher};
-                            let arts_fp = artifact_render_fingerprint.get();
                             let busy_now = busy.get();
                             // `load_session` deliberately swaps the visible rows before
                             // publishing their session id. Carry the id in every keyed row
@@ -10714,12 +10556,6 @@ fn App() -> impl IntoView {
                                     } else {
                                         list[i].fingerprint()
                                     };
-                                    // Assistant markdown embeds artifact chips (index + label).
-                                    if !streaming_assistant
-                                        && matches!(&list[i], ChatItem::Assistant { .. })
-                                    {
-                                        fp ^= arts_fp;
-                                    }
                                     fp ^= (commentary as u64) << 63;
                                     fp ^= (compact_assistant as u64) << 62;
                                     fp ^= timestamp.unwrap_or_default() as u64;
@@ -10811,13 +10647,6 @@ fn App() -> impl IntoView {
                                         ChatItem::Reasoning(String::new())
                                     } else {
                                         items.with_untracked(|list| list[i].clone())
-                                    };
-                                    let arts = if matches!(&item, ChatItem::Assistant { .. })
-                                        && !compact_assistant
-                                    {
-                                        artifacts.get_untracked()
-                                    } else {
-                                        Vec::new()
                                     };
                                     let on_resume = Callback::new(resume_turn);
                                     let class = if commentary {
@@ -10965,7 +10794,7 @@ fn App() -> impl IntoView {
                                                 }.into_view()
                                             } else {
                                                 render_item(
-                                                    i, &item, timestamp, &arts, on_artifact_select, on_file_link,
+                                                    i, &item, timestamp, artifacts, on_artifact_select, on_file_link,
                                                     run_records, run_clock.read_only(), busy.read_only(), compact_assistant,
                                                     active_acp_agent_id.get().is_none()
                                                         && !matches!(active_branch_state.get_untracked().as_deref(), Some("merged" | "orphaned")),
@@ -11383,6 +11212,33 @@ fn App() -> impl IntoView {
                                             send.call(ComposerSendAction::Normal);
                                         }>{t(locale.get(), "browser.offline.retry")}</button>
                                     <button type="button"
+                                        on:click=move |_| {
+                                            spawn_local(async move {
+                                                let reply = open_browser_extension_page().await;
+                                                let setup = from_value::<BrowserExtensionSetup>(reply)
+                                                    .unwrap_or_default();
+                                                let path = setup
+                                                    .extension_path
+                                                    .filter(|path| !path.trim().is_empty());
+                                                let has_path = path.is_some();
+                                                // Keep the remaining manual steps to one paste:
+                                                // the extension path goes onto the clipboard.
+                                                if let Some(path) = path {
+                                                    if let Some(window) = web_sys::window() {
+                                                        let _ = wasm_bindgen_futures::JsFuture::from(
+                                                            window.navigator().clipboard().write_text(&path),
+                                                        )
+                                                        .await;
+                                                    }
+                                                }
+                                                if setup.opened && has_path {
+                                                    show_actionable_toast(&t(locale.get_untracked(), "browser.offline.setup_done"));
+                                                } else {
+                                                    show_actionable_warning_toast(&t(locale.get_untracked(), "browser.offline.setup_failed"));
+                                                }
+                                            });
+                                        }>{t(locale.get(), "browser.offline.setup")}</button>
+                                    <button type="button"
                                         on:click=move |_| browser_offline_notice.set(None)>{t(locale.get(), "browser.offline.dismiss")}</button>
                                 </div>
                             </section>
@@ -11468,29 +11324,6 @@ fn App() -> impl IntoView {
                                     on:click=move |_| feedback_context.set(None)>{compose_icon("close")}</button>
                             </div>
                         </div>
-                    })}
-                    {move || motif_selection.get().map(|selection| {
-                        let selection_label = selection.feature_name.as_deref()
-                            .filter(|name| !name.trim().is_empty())
-                            .map(|name| format!("{} · {name}", selection.record_name.clone()))
-                            .unwrap_or_else(|| selection.record_name.clone());
-                        view! { <div class="composer-attachments composer-reference-chips" data-testid="motif-selection-reference">
-                            <div class="composer-attachment-row composer-reference-card motif-selection">
-                                <span class="composer-attachment-icon">{compose_icon("dna")}</span>
-                                <span class="composer-attachment-copy">
-                                    <span class="composer-attachment ready">{selection_label}</span>
-                                    <span class="composer-attachment-meta">{format!("{}-{} · {} bp", selection.start, selection.end, selection.length_bp())}</span>
-                                </span>
-                                <button type="button" class="composer-attachment-remove"
-                                    title=move || t(locale.get(), "composer.remove_attachment")
-                                    aria-label=move || t(locale.get(), "composer.remove_attachment")
-                                    on:click=move |_| {
-                                        let block = selection.composer_text();
-                                        input.update(|draft| *draft = draft.replace(&block, "").trim().to_string());
-                                        motif_selection.set(None);
-                                    }>{compose_icon("close")}</button>
-                            </div>
-                        </div> }
                     })}
                     {move || (!attachments.get().is_empty()).then(|| view! {
                         <div class="composer-attachments">
@@ -15129,7 +14962,6 @@ fn App() -> impl IntoView {
             snapshot=trajectory_snapshot
             live=trajectory_live
             busy=busy
-            session_id=active_session
         />
         <CapabilitiesOverlay
             locale=locale show_capabilities=show_capabilities
@@ -15154,8 +14986,30 @@ fn App() -> impl IntoView {
     }
 }
 
+/// `console_error_panic_hook` plus one deliberate downgrade: leptos 0.6
+/// runs a `create_effect`'s first pass in a microtask bound to its owner, and
+/// an owner disposed in between makes `with_owner` panic with
+/// `OwnerDisposed`. Keyed rows (streaming turns, artifact-card rebuilds) hit
+/// that race routinely; under release `panic = "abort"` it used to take the
+/// whole renderer down — a dead window with the backend still running. A
+/// disposed-owner effect has nothing left to update, so the correct handling
+/// is to drop it with a console warning instead of aborting.
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(move |info| {
+        let message = format!("{info}");
+        if message.contains("OwnerDisposed") {
+            web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
+                "dropped reactive effect for a disposed owner: {message}"
+            )));
+            return;
+        }
+        // Everything else keeps the standard hook behavior (error + stack).
+        console_error_panic_hook::hook(info);
+    }));
+}
+
 pub fn main() {
-    console_error_panic_hook::set_once();
+    install_panic_hook();
     let is_pet_window = window().location().search().ok().is_some_and(|query| {
         query
             .split('&')

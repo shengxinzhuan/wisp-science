@@ -13,7 +13,6 @@ use wisp_store::Store;
 
 pub const SETTING_KEY: &str = "browser_url_filters";
 pub const AUTO_LAUNCH_KEY: &str = "browser_auto_launch";
-pub const AUTO_CLOSE_TABS_KEY: &str = "browser_auto_close_tabs";
 const MAX_RULES: usize = 200;
 const MAX_REASON_CHARS: usize = 240;
 
@@ -140,44 +139,6 @@ pub async fn set_browser_auto_launch(
     state
         .store
         .set_setting(AUTO_LAUNCH_KEY, if enabled { "true" } else { "false" })
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(enabled)
-}
-
-pub fn parse_auto_close_tabs(raw: Option<&str>) -> bool {
-    match raw.map(str::trim) {
-        Some("true") | Some("1") | Some("on") => true,
-        Some(_) | None => false,
-    }
-}
-
-pub async fn auto_close_tabs_enabled(store: &Store) -> bool {
-    parse_auto_close_tabs(
-        store
-            .get_setting(AUTO_CLOSE_TABS_KEY)
-            .await
-            .ok()
-            .flatten()
-            .as_deref(),
-    )
-}
-
-#[tauri::command]
-pub async fn get_browser_auto_close_tabs(
-    state: State<'_, crate::AppState>,
-) -> Result<bool, String> {
-    Ok(auto_close_tabs_enabled(&state.store).await)
-}
-
-#[tauri::command]
-pub async fn set_browser_auto_close_tabs(
-    state: State<'_, crate::AppState>,
-    enabled: bool,
-) -> Result<bool, String> {
-    state
-        .store
-        .set_setting(AUTO_CLOSE_TABS_KEY, if enabled { "true" } else { "false" })
         .await
         .map_err(|error| error.to_string())?;
     Ok(enabled)
@@ -460,16 +421,6 @@ mod tests {
         assert!(!parse_auto_launch(Some("off")));
     }
 
-    #[test]
-    fn auto_close_tabs_defaults_off_and_treats_true_as_on() {
-        assert!(!parse_auto_close_tabs(None));
-        assert!(!parse_auto_close_tabs(Some("")));
-        assert!(!parse_auto_close_tabs(Some("false")));
-        assert!(parse_auto_close_tabs(Some("true")));
-        assert!(parse_auto_close_tabs(Some("1")));
-        assert!(parse_auto_close_tabs(Some("on")));
-    }
-
     #[tokio::test]
     async fn auto_launch_setting_round_trips() {
         let tmp = std::env::temp_dir().join(format!(
@@ -482,27 +433,6 @@ mod tests {
         assert!(!auto_launch_enabled(&store).await);
         store.set_setting(AUTO_LAUNCH_KEY, "true").await.unwrap();
         assert!(auto_launch_enabled(&store).await);
-        let _ = std::fs::remove_file(&tmp);
-    }
-
-    #[tokio::test]
-    async fn auto_close_tabs_setting_round_trips() {
-        let tmp = std::env::temp_dir().join(format!(
-            "wisp_browser_auto_close_tabs_{}.sqlite",
-            uuid::Uuid::new_v4()
-        ));
-        let store = Store::open(&tmp).await.unwrap();
-        assert!(!auto_close_tabs_enabled(&store).await);
-        store
-            .set_setting(AUTO_CLOSE_TABS_KEY, "true")
-            .await
-            .unwrap();
-        assert!(auto_close_tabs_enabled(&store).await);
-        store
-            .set_setting(AUTO_CLOSE_TABS_KEY, "false")
-            .await
-            .unwrap();
-        assert!(!auto_close_tabs_enabled(&store).await);
         let _ = std::fs::remove_file(&tmp);
     }
 }

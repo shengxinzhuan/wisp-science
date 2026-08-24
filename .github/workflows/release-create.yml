@@ -44,7 +44,7 @@ jobs:
           set -euo pipefail
           FILE=".github/release-notes/${RELEASE_TAG}.md"
           echo "notes_file=$FILE" >> "$GITHUB_OUTPUT"
-          bash scripts/github_release_notes.sh "$FILE" "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          scripts/github_release_notes.sh "$FILE" "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
         env:

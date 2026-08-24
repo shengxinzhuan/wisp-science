@@ -1674,28 +1674,15 @@ pub struct BrowserUrlFilters {
     pub prefer: Vec<BrowserUrlFilterRule>,
 }
 
-/// One tab Wisp opened during a conversation turn, offered for cleanup.
+/// Mirrors the backend `open_browser_extension_page` reply: the verified
+/// bundled extension path (null when the build ships no complete extension)
+/// and whether a browser was actually launched on its extension manager page.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BrowserTabCleanupItem {
+pub struct BrowserExtensionSetup {
     #[serde(default)]
-    pub session: String,
-    pub tab_id: i64,
+    pub extension_path: Option<String>,
     #[serde(default)]
-    pub url: String,
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub initial_url: String,
-}
-
-/// Prompt to close tabs Wisp opened in one turn. `tab_id` stays valid across
-/// in-tab navigations; only this turn's ids are included.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BrowserTabCleanupPrompt {
-    pub turn_id: String,
-    pub frame_id: String,
-    #[serde(default)]
-    pub tabs: Vec<BrowserTabCleanupItem>,
+    pub opened: bool,
 }
 
 fn default_sync_backend() -> String {

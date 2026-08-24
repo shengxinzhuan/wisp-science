@@ -34,12 +34,6 @@ jobs:
       - name: Run MCP process-tree shutdown regression
         run: cargo test -p wisp-mcp --test process_tree_shutdown
 
-      # Interpreters are often launchers: Windows Rscript.exe re-launches
-      # bin\x64\Rscript.exe through cmd.exe. Stopping a runtime must reclaim
-      # that whole tree, which only a real per-OS process tree can prove.
-      - name: Run runtime worker process-tree regression
-        run: cargo test -p wisp-runtime --test worker_process_tree
-
       # The kernel worker is Python, so its tests are too. Run them on all
       # three OSes: the worker's write reporting and its process handling are
       # exactly the parts that differ per platform.
