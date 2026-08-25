@@ -27,6 +27,21 @@ pub(crate) fn streaming_markdown_commit_interval_ms(
     }
 }
 
+/// Append rendered HTML into the streaming prefix container. Done via DOM
+/// text because `inner_html=` would replace (and re-layout) the whole prefix.
+fn append_html_block(dom_id: &str, html: &str) {
+    if html.is_empty() {
+        return;
+    }
+    let Some(el) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(dom_id))
+    else {
+        return;
+    };
+    let _ = el.insert_adjacent_html("beforeend", html);
+}
+
 fn assistant_text_at(items: RwSignal<Vec<ChatItem>>, source_item: usize) -> String {
     items.with_untracked(|rows| match rows.get(source_item) {
         Some(ChatItem::Assistant { text, .. }) => text.clone(),
@@ -102,19 +117,59 @@ pub(crate) fn StreamingAssistantMessage(
         }
     });
 
+    let hid = unique_dom_id("stream-md");
+    // (prefix text, container DOM id) of the last commit. When the next commit
+    // extends the same text, only the new suffix is parsed and appended.
+    let rendered_prefix: Rc<RefCell<Option<(String, String)>>> = Rc::new(RefCell::new(None));
+    let hid_for_memo = hid.clone();
     let html = create_memo({
         let recent_parse_cost_ms = Rc::clone(&recent_parse_cost_ms);
         move |_| {
+            // Frozen-prefix fast path: a stream appends, so a commit whose text
+            // starts with the previously rendered text only needs to parse the
+            // NEW suffix and append it. Blocks split across the boundary are
+            // rare mid-stream (an unfinished block stays in the plain tail),
+            // so re-parsing just the last finished block covers the seam.
+            // Long replies no longer pay O(n^2) full re-parses per commit.
             let started_at = js_sys::Date::now();
             let project_root =
                 project.and_then(|project| project.get().map(|project| project.root));
-            let html = enrich_md_html(
-                md_to_html(&rendered_text.get()),
-                &[],
-                &[],
-                locale.get(),
-                project_root.as_deref(),
-            );
+            let text = rendered_text.get();
+            // Append fast path applies only when the previously rendered text
+            // ends exactly at a block boundary (blank line) — then the suffix
+            // is independently parseable and can be appended via DOM. Mid-block
+            // growth (no separator yet, e.g. one long paragraph) re-renders the
+            // full prefix; the adaptive commit interval bounds that cost.
+            let appendable = rendered_prefix
+                .borrow()
+                .as_ref()
+                .is_some_and(|(prefix, _)| {
+                    text.starts_with(prefix.as_str()) && prefix.ends_with("\n\n")
+                });
+            let html = if appendable {
+                let (prefix, dom_id) = rendered_prefix.borrow().as_ref().cloned().unwrap();
+                let suffix = text[prefix.len()..].to_string();
+                let parsed = enrich_md_html(
+                    md_to_html(&suffix),
+                    &[],
+                    &[],
+                    locale.get(),
+                    project_root.as_deref(),
+                );
+                append_html_block(&dom_id, &parsed);
+                *rendered_prefix.borrow_mut() = Some((text, dom_id));
+                String::new() // appended via DOM; memo value is a no-op change
+            } else {
+                let fresh = enrich_md_html(
+                    md_to_html(&text),
+                    &[],
+                    &[],
+                    locale.get(),
+                    project_root.as_deref(),
+                );
+                *rendered_prefix.borrow_mut() = Some((text, hid_for_memo.clone()));
+                fresh
+            };
             let elapsed = (js_sys::Date::now() - started_at).max(0.0);
             let smoothed = recent_parse_cost_ms
                 .get()
@@ -136,7 +191,6 @@ pub(crate) fn StreamingAssistantMessage(
             _ => String::new(),
         })
     });
-    let hid = unique_dom_id("stream-md");
     // `inner_html` replaces the whole parsed prefix on every commit. Running
     // highlight.js and KaTeX here would therefore rescan and mutate an
     // increasingly large, short-lived DOM tree each time. The settled
@@ -153,7 +207,7 @@ pub(crate) fn StreamingAssistantMessage(
             >
                 <div
                     class="streaming-markdown-prefix md"
-                    id=hid
+                    id=hid.clone()
                     inner_html=move || html.get()
                     on:click=move |ev: web_sys::MouseEvent| {
                         handle_md_click(&ev, &[], &[], &on_artifact, &on_file)

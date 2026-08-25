@@ -46,6 +46,17 @@ Root cause verified against production transcripts and live APIs: reasoning-only
 - `src-tauri/src/app_commands.rs` + `lib.rs` — new `open_browser_extension_page` command.
 - `ui/src/main.rs` banner — "Set up browser" button between Retry and Dismiss: opens the page, copies the extension path to the clipboard, and shows a longer-lived actionable toast with the two remaining manual steps. `ui/src/bindings.rs`, `ui/src/i18n.rs` (en/zh), `ui/mock-bridge.js` updated. 【tagged `#extension-setup`】
 
+## 6. CPU hot-path fixes / CPU 热点修复
+
+Six fixes targeting the high-CPU reports (idle machine verified <1%; the burn happens during use):
+
+- **Streaming markdown append-only rendering** `ui/src/app_support/messages.rs` — a commit that extends the previously rendered text at a block boundary now parses only the new suffix and appends it via DOM, instead of re-parsing and re-replacing the whole prefix (was O(n²) over a long reply). Mid-block growth still full-renders, bounded by the adaptive commit interval.
+- **Transfer tray two-layer closure** `ui/src/main.rs` — the tray no longer subscribes to the 1-second clock unconditionally; with no transfer-worthy runs it stops rescanning and JSON-parsing every run record each second.
+- **Completion dispatcher idle backoff** `src-tauri/src/delegation_completion.rs` — the 250 ms SQLite polling loop backs off to 5 s after four idle polls; any dispatch resets to fast polling.
+- **Pet poll gating** `ui/src/pet.rs` — the 2 s pet poll keeps one cheap settings read while disabled and skips the runtime snapshot (SQLite run query) unless the pet is visible; slow-probes notice re-enabling within seconds.
+- **Scroll hot path write-only** `ui/src/scroll.js` — follow snaps no longer read `scrollTop` back after writing it (that round-trip forced a synchronous layout every streaming frame), and the jump pill syncs only when not following.
+- Not done (deliberately): keyed-For projection row caching and run-poll event-driven rewrite — architectural changes whose risk outweighed the remaining gain this round.
+
 ## Known issues, deliberately not fixed in 1.6.1 / 已知问题，本版不修
 
 - **Agent-workflow latency** (diagnosed, no code change): per-tool provenance does two full workspace scans (≤20k entries) around every producing tool call (`crates/wisp-core/src/agent.rs:498-527`) — the dominant per-step cost on DrvFs/Windows; Windows shells cold-start PowerShell per call; streaming has three stacked buffers (33 ms + 50 ms + adaptive 50–1200 ms markdown commit). Interim mitigations: keep auto-review off; disabling follow-up questions frees the shared API key for the next turn's first token.
