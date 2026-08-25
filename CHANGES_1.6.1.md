@@ -1,7 +1,7 @@
 # wisp-science 1.6.1 — Fix Release / 修复版本
 
-All changes are based on `v1.6.0`. Five themes: cross-provider model-switch 400s, silent audit skips, dead-window rendering, browser-extension onboarding, and error readability. No schema migrations; sessions and settings are forward/backward compatible.
-所有改动基于 `v1.6.0`。共五个主题：切模型 400、审计静默跳过、窗口死亡、浏览器扩展引导、错误可读性。无数据库迁移；会话与设置双向兼容。
+All changes are based on `v1.6.0`. Six themes: cross-provider model-switch 400s, silent audit skips, dead-window rendering, browser-extension onboarding, error readability, and agent effectiveness. No schema migrations; sessions and settings are forward/backward compatible.
+所有改动基于 `v1.6.0`。共六个主题：切模型 400、审计静默跳过、窗口死亡、浏览器扩展引导、错误可读性、智能体效果。无数据库迁移；会话与设置双向兼容。
 
 ---
 
@@ -72,6 +72,18 @@ Measured on a real 904-message session: every `view_image` forwarded the picture
 - **Shared HTTP client pool** `crates/wisp-llm/src/provider.rs` — review / follow-up / memory side calls each built a fresh `reqwest::Client` per call, paying a TLS handshake every time. No-proxy clients now share one process-wide pool; per-proxy clients stay isolated.
 - **Streaming commit cap 1200 ms → 400 ms** `ui/src/app_support/messages.rs` — with append-only rendering the per-commit cost dropped sharply, so the adaptive interval cap can be tighter for typing-feel latency; full re-parses only happen mid-block and stay throttled by measured cost.
 
+## 9. Agent-effectiveness batch / 智能体效果改进
+
+**User-facing problem**: the agent felt "not smart" — it executed a model's parallel read batch one call at a time, started every session blind about the project layout, and after a failed `edit` could only flail ("re-read the file") instead of correcting itself in one retry.
+**用户问题**：智能体显得"不聪明"——模型一次发出的多个只读调用被逐个串行执行；每个新会话对项目结构一无所知；`edit` 失败后只提示重读文件，模型无法一次自纠。
+
+- **9a. Read-only batch fan-out** `crates/wisp-core/src/agent.rs` — when one model batch opens with several independent retrieval calls, the leading run of registered read-only tools (`Tool::read_only()`, approval `Allow`) now executes concurrently via `join_all`; latency for a batch of N reads drops from N round trips to 1. The first call that can write, prompt, or is unknown ends the parallel run; it and everything after stay sequential, so provenance windows, approvals, and side effects keep their order. Tool results are ingested in model order either way. 【tagged `#parallel-read-batch`】
+- **9b. Workspace overview in the system prompt** `crates/wisp-core/src/system_prompt.rs` — fresh sessions embed a depth-2 project tree (heavy dirs skipped, listing capped at 4 KiB) plus a one-line git branch/dirty summary, so the model starts with correct paths instead of burning its first iterations on directory listings. Built once at prompt assembly; degraded (no git, unreadable dirs) to a one-line note, never an error. 【tagged `#workspace-overview`】
+- **9c. edit failures self-correcting** `crates/wisp-tools/src/edit.rs` — "old string not found" now reports the closest matching region (line range, similarity, original snippet with indentation; in-house Levenshtein, no new deps; skipped for >1 MB files and <50% similarity), and ambiguous matches list up to five line numbers. The model can fix its `old` string in one retry instead of re-reading the whole file. 【tagged `#edit-near-miss`】
+- **9d. Prompt teaches batching and delegation** `crates/wisp-core/src/system_prompt.rs` — tool guidance now tells the model to issue independent read-only calls in one batch (which 9a runs concurrently) and to hand multi-file comprehension questions to the `explore` subagent instead of pulling many files into the main context. 【tagged `#prompt-batching`】
+- Tests: `read_only_batch_prefix_runs_concurrently` (barrier pair deadlocks if executed sequentially), `read_only_prefix_stays_sequential_after_first_asking_tool`, `sequential_path_still_handles_a_single_read_only_call`, `workspace_overview_lists_project_files_and_skips_heavy_dirs`, `tool_guidance_teaches_batching_and_explore_delegation`, plus 4 new `edit.rs` near-miss tests.
+- Not done (deliberately): prompt-wide rewrite — the defensive rules each encode a real past bug; risk outweighs cosmetic gain.
+
 ## Known issues, deliberately not fixed in 1.6.1 / 已知问题，本版不修
 
 - **Agent-workflow latency** (diagnosed, no code change): per-tool provenance does two full workspace scans (≤20k entries) around every producing tool call (`crates/wisp-core/src/agent.rs:498-527`) — the dominant per-step cost on DrvFs/Windows; Windows shells cold-start PowerShell per call; streaming has three stacked buffers (33 ms + 50 ms + adaptive 50–1200 ms markdown commit). Interim mitigations: keep auto-review off; disabling follow-up questions frees the shared API key for the next turn's first token.
@@ -81,6 +93,7 @@ Measured on a real 904-message session: every `view_image` forwarded the picture
 ## Verification / 验证
 
 - `cargo test -p wisp-llm`: 62 unit + 3 integration passed.
+- `cargo test -p wisp-core`: 170 passed (165 + 5 new agent-effectiveness tests); `cargo test -p wisp-tools`: 57 passed (53 + 4 new edit near-miss tests).
 - `cargo check`: wisp-tauri / wisp-llm / wisp-dto clean; `ui` wasm32 target clean.
 - Watchdog decision unit test passed; `cargo fmt --check` clean for all touched files (six untouched files carry pre-existing baseline drift, left alone per AGENTS.md).
 - Playwright (mock bridge): long-session-stress 3/3, artifact 21/21, #927 scroll 3/3.
