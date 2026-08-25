@@ -1014,6 +1014,15 @@ impl BrowserBridge {
             opened,
         }
     }
+
+    /// Live connection status for the offline banner's recheck: the per-turn
+    /// judgment is frozen into the transcript, so a banner from a transient
+    /// disconnect sticks forever even after the extension reconnects (and
+    /// resurrects on session reload). The UI rechecks through this before
+    /// showing the banner.
+    pub async fn extension_connected(&self) -> bool {
+        self.client_connected().await
+    }
 }
 
 /// Reply of the `open_browser_extension_page` command: the verified bundled

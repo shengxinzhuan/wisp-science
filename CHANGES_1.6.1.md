@@ -65,6 +65,13 @@ Measured on a real 904-message session: every `view_image` forwarded the picture
 - Test: `vision_primary_view_image_attaches_without_describer_round_trip` (scripted primary + recording fallback; asserts zero describer calls and an image part in the follow-up request).
 - Latency report that motivated this (same key, live APIs): DeepSeek TTFB ~80 ms; kimi-k3 TTFB 1-15 s (reasoning). Per-tool-step gap in the measured session: median 14 s — mostly k3 thinking; view_image was the one outlier the client could eliminate.
 
+## 8. Responsiveness batch / 响应速度第二批
+
+- **Provenance scan halved** `crates/wisp-core/src/agent.rs` — the after-snapshot of one producing tool call is reused as the next call's before-snapshot, instead of rescanning the whole workspace (≤20k entries) twice per call. Hundreds of ms per tool step on DrvFs/network mounts.
+- **Offline banner live recheck** `src-tauri` + `ui/src/main.rs` — the per-turn "extension disconnected" judgment is frozen in the transcript, so a transient disconnect kept the banner forever (and resurrected it on session reload) even after the extension reconnected. The banner now rechecks live connection state before rendering and clears itself when the extension is back.
+- **Shared HTTP client pool** `crates/wisp-llm/src/provider.rs` — review / follow-up / memory side calls each built a fresh `reqwest::Client` per call, paying a TLS handshake every time. No-proxy clients now share one process-wide pool; per-proxy clients stay isolated.
+- **Streaming commit cap 1200 ms → 400 ms** `ui/src/app_support/messages.rs` — with append-only rendering the per-commit cost dropped sharply, so the adaptive interval cap can be tighter for typing-feel latency; full re-parses only happen mid-block and stay throttled by measured cost.
+
 ## Known issues, deliberately not fixed in 1.6.1 / 已知问题，本版不修
 
 - **Agent-workflow latency** (diagnosed, no code change): per-tool provenance does two full workspace scans (≤20k entries) around every producing tool call (`crates/wisp-core/src/agent.rs:498-527`) — the dominant per-step cost on DrvFs/Windows; Windows shells cold-start PowerShell per call; streaming has three stacked buffers (33 ms + 50 ms + adaptive 50–1200 ms markdown commit). Interim mitigations: keep auto-review off; disabling follow-up questions frees the shared API key for the next turn's first token.
