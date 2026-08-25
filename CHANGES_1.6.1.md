@@ -57,6 +57,14 @@ Six fixes targeting the high-CPU reports (idle machine verified <1%; the burn ha
 - **Scroll hot path write-only** `ui/src/scroll.js` — follow snaps no longer read `scrollTop` back after writing it (that round-trip forced a synchronous layout every streaming frame), and the jump pill syncs only when not following.
 - Not done (deliberately): keyed-For projection row caching and run-poll event-driven rewrite — architectural changes whose risk outweighed the remaining gain this round.
 
+## 7. view_image double-billing removed / view_image 不再双重计费
+
+Measured on a real 904-message session: every `view_image` forwarded the picture through a vision describer LLM call before the main model saw it — median 18 s, p90 154 s per look (the describer was itself a slow reasoning model), and the follow-up request then paid the image upload too. CLI agents attach the image directly.
+
+- `crates/wisp-core/src/agent.rs` — when the active model supports vision (`ctx.supports_vision`, same flag the message-attachment path already uses), the tool result now carries the image as a native `Content::Parts` image part; the vision describer round-trip only runs for text-only primary models. Existing context machinery (serialization, `age_images` tombstones, text-only downgrade) already handles image parts on tool rows.
+- Test: `vision_primary_view_image_attaches_without_describer_round_trip` (scripted primary + recording fallback; asserts zero describer calls and an image part in the follow-up request).
+- Latency report that motivated this (same key, live APIs): DeepSeek TTFB ~80 ms; kimi-k3 TTFB 1-15 s (reasoning). Per-tool-step gap in the measured session: median 14 s — mostly k3 thinking; view_image was the one outlier the client could eliminate.
+
 ## Known issues, deliberately not fixed in 1.6.1 / 已知问题，本版不修
 
 - **Agent-workflow latency** (diagnosed, no code change): per-tool provenance does two full workspace scans (≤20k entries) around every producing tool call (`crates/wisp-core/src/agent.rs:498-527`) — the dominant per-step cost on DrvFs/Windows; Windows shells cold-start PowerShell per call; streaming has three stacked buffers (33 ms + 50 ms + adaptive 50–1200 ms markdown commit). Interim mitigations: keep auto-review off; disabling follow-up questions frees the shared API key for the next turn's first token.

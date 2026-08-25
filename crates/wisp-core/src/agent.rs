@@ -565,17 +565,32 @@ async fn agent_loop_inner(
                 }
             }
             let (content, tool_text, ok) = if let Some(img) = &result.image {
-                match vision_provider {
-                    Some(vision) => match describe_image(vision, img, &name, &args).await {
-                        Ok(text) => (Content::text(text.clone()), text, true),
-                        Err(e) => {
-                            let text = format!("{name} error: vision model failed: {e}");
+                if ctx.supports_vision {
+                    // Fast path: the active model reads images natively, so
+                    // attach the picture directly to the tool result. The old
+                    // path round-tripped every view_image through a vision
+                    // describer first — one extra LLM call per image that, on
+                    // a reasoning vision model, averaged ~18s (p90 154s) per
+                    // look. The label text keeps the transcript readable and
+                    // `age_images` keeps old images bounded in context.
+                    (
+                        image_content(&img.label, &img.data_url),
+                        img.label.clone(),
+                        true,
+                    )
+                } else {
+                    match vision_provider {
+                        Some(vision) => match describe_image(vision, img, &name, &args).await {
+                            Ok(text) => (Content::text(text.clone()), text, true),
+                            Err(e) => {
+                                let text = format!("{name} error: vision model failed: {e}");
+                                (Content::text(text.clone()), text, false)
+                            }
+                        },
+                        None => {
+                            let text = format!("{name} error: no vision model is configured. Mark an API model as vision-capable in Settings -> Models and set it for image analysis.");
                             (Content::text(text.clone()), text, false)
                         }
-                    },
-                    None => {
-                        let text = format!("{name} error: no vision model is configured. Mark an API model as vision-capable in Settings -> Models and set it for image analysis.");
-                        (Content::text(text.clone()), text, false)
                     }
                 }
             } else {
@@ -2065,6 +2080,76 @@ mod tests {
         assert!(matches!(parts[0], Part::Text { ref text, .. } if text == "What is shown?"));
         assert!(
             matches!(parts[1], Part::Image { ref image_url, .. } if image_url.url.starts_with("data:image/png"))
+        );
+    }
+
+    #[tokio::test]
+    async fn vision_primary_view_image_attaches_without_describer_round_trip() {
+        // A vision-capable primary must receive the view_image result as a
+        // native image part in the next request. The old path forwarded every
+        // image through the vision describer first — one extra LLM call per
+        // look (~18s median on a reasoning vision model).
+        // A real tiny PNG on disk: view_image is a real tool, not a stub.
+        let dir = std::env::temp_dir().join(format!("wisp-view-image-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        png.extend_from_slice(include_bytes!("../tests/fixtures/1x1.png"));
+        std::fs::write(dir.join("plot.png"), &png).unwrap();
+
+        let script = format!(
+            r#"{{"tool_calls": [{{"name": "view_image", "arguments": {{"path": "{}"}}}}]}} "#,
+            dir.join("plot.png").to_string_lossy().replace('\\', "\\\\")
+        );
+        let steps: Vec<wisp_llm::scripted::ScriptedCompletion> = serde_json::from_str(&format!(
+            "[{}, {{\"content\": \"The plot shows a rising curve.\"}}]",
+            script.trim()
+        ))
+        .unwrap();
+        let primary = wisp_llm::scripted::ScriptedProvider::new("scripted-primary", steps);
+        let fallback = RecordingProvider::new("vision-fallback", "describer text");
+        let mut ctx = ContextManager::new(100_000);
+        ctx.supports_vision = true;
+        let tools = Registry::builtins();
+
+        let outcome = agent_loop(
+            &mut ctx,
+            &primary,
+            Some(&fallback),
+            &tools,
+            &dir,
+            &NullOutput,
+            "check the plot",
+            8,
+            None,
+        )
+        .await;
+        std::fs::remove_dir_all(&dir).ok();
+        outcome.unwrap();
+
+        // The describer must never run.
+        assert!(
+            fallback.complete_messages.lock().unwrap().is_empty(),
+            "vision-capable primary must not round-trip view_image through the describer"
+        );
+        // And the follow-up request carries the image part on the tool row.
+        let requests = primary.snapshot().requests;
+        let second = &requests[1].messages;
+        let tool_row = second
+            .iter()
+            .rev()
+            .find(|m| m.role == wisp_llm::Role::Tool)
+            .expect("tool result row in second request");
+        let has_image = match &tool_row.content {
+            wisp_llm::Content::Parts(parts) => parts.iter().any(|p| {
+                matches!(p, wisp_llm::Part::Image { image_url, .. }
+                    if image_url.url.starts_with("data:image"))
+            }),
+            _ => false,
+        };
+        assert!(
+            has_image,
+            "view_image result should be an image part, got {:?}",
+            tool_row.content
         );
     }
 
